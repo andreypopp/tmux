@@ -684,6 +684,7 @@ window_pane_update_focus(struct window_pane *wp)
 				    (c->flags & CLIENT_FOCUSED) &&
 				    c->session->curw->window == wp->window &&
 				    c->overlay_draw == NULL &&
+				    !status_side_focused(c) &&
 				    wp->window->menu == NULL) {
 					focused = 1;
 					break;
