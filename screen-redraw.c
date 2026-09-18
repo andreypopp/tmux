@@ -1697,6 +1697,8 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 	struct window_pane	*loop;
 	u_int			 width, i, y, lines, j, side_cols;
 	int			 side_x;
+	struct grid_cell	 side_defaults;
+	struct tty_style_ctx	 side_style_ctx;
 	struct redraw_span	*first;
 	struct visible_ranges	*r;
 	struct visible_range	*rr;
@@ -1811,7 +1813,10 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 		side_cols = status_side_size(c);
 		side_x = status_side_at_column(c);
 		if (side_cols != 0 && side_x != -1) {
-			y = status_side_at_row(c);
+			if (dctx.flags & REDRAW_STATUS_TOP)
+				y = dctx.status_lines;
+			else
+				y = 0;
 			for (i = 0; i < status_side_rows(c); i++) {
 				r = tty_check_overlay_range(tty, side_x, y + i,
 				    side_cols);
@@ -1822,7 +1827,8 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 					tty_draw_line(tty,
 					    &c->side_status.screen,
 					    rr->px - side_x, i, rr->nx, rr->px,
-					    y + i, NULL);
+					    y + i, status_side_style_ctx(c,
+					    &side_defaults, &side_style_ctx));
 				}
 			}
 		}
