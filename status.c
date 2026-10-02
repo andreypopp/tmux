@@ -791,6 +791,21 @@ status_side_style_ctx(struct client *c, struct grid_cell *defaults,
 	return (style_ctx);
 }
 
+/* Draw the line on the edge next to the window area, if there is one. */
+static void
+status_side_draw_line(struct screen_write_ctx *ctx,
+    const struct grid_cell *lgc, int linex, u_int rows)
+{
+	u_int	n;
+
+	if (linex == -1)
+		return;
+	for (n = 0; n < rows; n++) {
+		screen_write_cursormove(ctx, linex, n, 0);
+		screen_write_cell(ctx, lgc);
+	}
+}
+
 /*
  * Copy the job screen into the side status screen, behind the line on the
  * edge next to the window area. Only runs on side status redraws. Returns
@@ -800,11 +815,10 @@ status_side_style_ctx(struct client *c, struct grid_cell *defaults,
  */
 static int
 status_side_redraw_job(struct client *c, const struct grid_cell *gc,
-    int force)
+    const struct grid_cell *lgc, int force)
 {
 	struct side_status_line	*ss = &c->side_status;
 	struct screen_write_ctx	 ctx;
-	struct grid_cell	 lgc;
 	u_int			 x, width = status_side_size(c);
 	u_int			 rows = status_side_rows(c), n;
 	int			 linex = ss->linex;
@@ -819,14 +833,7 @@ status_side_redraw_job(struct client *c, const struct grid_cell *gc,
 	for (n = 0; n < width * rows; n++)
 		screen_write_putc(&ctx, gc, ' ');
 	style_ranges_free(&ss->ranges);
-	if (linex != -1) {
-		memcpy(&lgc, gc, sizeof lgc);
-		lgc.attr |= GRID_ATTR_CHARSET;
-		for (n = 0; n < rows; n++) {
-			screen_write_cursormove(&ctx, linex, n, 0);
-			screen_write_putc(&ctx, &lgc, 'x');
-		}
-	}
+	status_side_draw_line(&ctx, lgc, linex, rows);
 	status_side_content(c, &x, &width);
 	screen_write_cursormove(&ctx, x, 0, 0);
 	if (ss->jobscreen.hyperlinks != NULL) {
@@ -842,7 +849,7 @@ status_side_redraw_job(struct client *c, const struct grid_cell *gc,
 }
 
 /*
- * Get the column of the ACS line separating the side status line from the
+ * Get the column of the border line separating the side status line from the
  * window area, or -1 if there is none. The line takes the edge column
  * nearest the window area out of the side status width.
  */
@@ -880,6 +887,7 @@ status_side_redraw(struct client *c)
 {
 	struct side_status_line		*ss = &c->side_status;
 	struct session			*s = c->session;
+	struct options			*wo;
 	struct screen_write_ctx		 ctx;
 	struct grid_cell		 gc, lgc;
 	struct format_tree		*ft;
@@ -909,6 +917,17 @@ status_side_redraw(struct client *c)
 		memcpy(&ss->style, &gc, sizeof ss->style);
 	}
 
+	/* The line next to the window area is drawn as a pane border. */
+	wo = s->curw->window->options;
+	memcpy(&lgc, &gc, sizeof lgc);
+	style_add(&lgc, wo, "pane-border-style", ft);
+	window_get_border_cell(NULL, options_get_number(wo, "pane-border-lines"),
+	    CELL_UD, &lgc);
+	if (!grid_cells_equal(&lgc, &ss->linestyle)) {
+		force = 1;
+		memcpy(&ss->linestyle, &lgc, sizeof ss->linestyle);
+	}
+
 	/* Resize the target screen. */
 	if (screen_size_x(&ss->screen) != width ||
 	    screen_size_y(&ss->screen) != rows) {
@@ -926,7 +945,7 @@ status_side_redraw(struct client *c)
 	/* A command replaces the format: show its screen instead. */
 	if (ss->command != NULL) {
 		format_free(ft);
-		return (status_side_redraw_job(c, &gc, force));
+		return (status_side_redraw_job(c, &gc, &lgc, force));
 	}
 
 	/* Expand the format. */
@@ -950,16 +969,9 @@ status_side_redraw(struct client *c)
 		screen_write_putc(&ctx, &gc, ' ');
 	style_ranges_free(&ss->ranges);
 
-	/* Draw the line on the edge next to the window area. */
-	if (linex != -1) {
-		memcpy(&lgc, &gc, sizeof lgc);
-		lgc.attr |= GRID_ATTR_CHARSET;
-		for (n = 0; n < rows; n++) {
-			screen_write_cursormove(&ctx, linex, n, 0);
-			screen_write_putc(&ctx, &lgc, 'x');
-		}
+	status_side_draw_line(&ctx, &lgc, linex, rows);
+	if (linex != -1)
 		width--;
-	}
 
 	screen_write_cursormove(&ctx, 0, 0, 0);
 	format_draw_lines(&ctx, &gc, linex == 0 ? 1 : 0, width, rows, expanded,
