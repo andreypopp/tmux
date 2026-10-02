@@ -2102,6 +2102,7 @@ struct side_status_line {
 	struct screen		 screen;
 
 	struct grid_cell	 style;
+	struct grid_cell	 linestyle;
 	char			*expanded;
 	int			 linex;
 	struct style_ranges	 ranges;
