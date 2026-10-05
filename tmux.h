@@ -82,6 +82,7 @@ struct sixel_image;
 #endif
 
 struct tty_ctx;
+struct tty_queries;
 struct tty_code;
 struct tty_key;
 struct tmuxpeer;
@@ -1876,6 +1877,7 @@ struct tty {
 
 	struct event	 key_timer;
 	struct tty_key	*key_tree;
+	struct tty_queries *queries;
 };
 
 /* Terminal command context. */
@@ -1883,6 +1885,7 @@ typedef void (*tty_ctx_redraw_cb)(const struct tty_ctx *, u_int, u_int);
 typedef int (*tty_ctx_set_client_cb)(struct tty_ctx *, struct client *);
 struct tty_ctx {
 	struct screen		*s;
+	struct window_pane	*wp;
 
 	tty_ctx_redraw_cb	 redraw_cb;
 	tty_ctx_set_client_cb	 set_client_cb;
@@ -2120,6 +2123,7 @@ struct status_line {
 
 /* Side status line. */
 struct side_status_line {
+	uint64_t		 generation;
 	struct screen		 screen;
 
 	struct grid_cell	 style;
@@ -3101,6 +3105,14 @@ int		 tty_acs_reverse_get(struct tty *, const char *, size_t);
 const struct utf8_data *tty_acs_double_borders(int);
 const struct utf8_data *tty_acs_heavy_borders(int);
 const struct utf8_data *tty_acs_rounded_borders(int);
+
+/* tty-query.c */
+void	tty_query_puts(struct tty *, const char *);
+void	tty_query_add(struct tty *, const char *, size_t, const struct tty_ctx *);
+int	tty_query_partial(struct tty *, const char *, size_t);
+int	tty_query_classify(struct tty *, const char *, size_t, size_t *, key_code *);
+int	tty_query_handle(struct tty *, const char *, size_t, int);
+void	tty_query_free(struct tty *);
 
 /* tty-keys.c */
 void		tty_keys_build(struct tty *);
