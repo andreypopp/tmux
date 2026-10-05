@@ -49,6 +49,7 @@ struct tty_key_parse {
 
 	int			 flags;
 #define TTY_KEY_PARSE_NO_META 0x1
+#define TTY_KEY_PARSE_QUERY 0x2
 };
 
 static void	tty_keys_add1(struct tty_key **, const char *, key_code);
@@ -667,6 +668,17 @@ tty_keys_reply(struct tty *tty, const char *buf, size_t len,
 	u_int	i;
 	int	n;
 
+	if (tty->queries != NULL && buf[0] == '\033' &&
+	    !(tty->flags & TTY_BRACKETPASTE)) {
+		n = tty_query_reply(tty, buf, len, &kp->size, 0);
+		if (n != -1)
+			kp->flags |= TTY_KEY_PARSE_QUERY;
+		if (n == 0)
+			kp->key = KEYC_UNKNOWN;
+		if (n != -1 && n != 2)
+			return (n);
+	}
+
 	for (i = 0; i < nitems(tty_keys_replies); i++) {
 		n = tty_keys_replies[i].fn(tty, buf, len, &kp->size, 0);
 		if (n == 0)
@@ -782,6 +794,11 @@ tty_keys_apply(struct tty *tty, const char *buf, struct tty_key_parse *kp)
 	size_t	size;
 	u_int	i;
 
+	if ((kp->flags & TTY_KEY_PARSE_QUERY) &&
+	    tty_query_reply(tty, buf, kp->size, &size, 1) == 0) {
+		kp->key = KEYC_UNKNOWN;
+		return;
+	}
 	if (kp->key == KEYC_MOUSE) {
 		tty->mouse_last_x = kp->m.x;
 		tty->mouse_last_y = kp->m.y;
@@ -944,10 +961,12 @@ partial_key:
 		if (delay < 500)
 			delay = 500;
 	}
-	if (tty->flags & (TTY_WAITFG|TTY_WAITBG) ||
+	if (!(tty->flags & TTY_BRACKETPASTE) &&
+	    ((kp.flags & TTY_KEY_PARSE_QUERY) ||
+	    tty->flags & (TTY_WAITFG|TTY_WAITBG) ||
 	    tty->flags & (TTY_OSC52QUERY|TTY_WINSZQUERY) ||
 	    (tty->flags & TTY_ALL_REQUEST_FLAGS) != TTY_ALL_REQUEST_FLAGS ||
-	    !TAILQ_EMPTY(&c->input_requests)) {
+	    !TAILQ_EMPTY(&c->input_requests))) {
 		log_debug("%s: increasing delay (active query)", c->name);
 		if (delay < 500)
 			delay = 500;
