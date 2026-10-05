@@ -749,7 +749,7 @@ tty_keys_next(struct tty *tty)
 	const char		*buf;
 	size_t			 len, size;
 	cc_t			 bspace;
-	int			 delay, expired = 0, n, bg = tty->bg;
+	int			 delay, expired = 0, n, bg = tty->bg, query_partial = 0;
 	key_code		 key, onlykey;
 	struct mouse_event	 m = { 0 };
 	struct key_event	*event;
@@ -769,6 +769,15 @@ tty_keys_next(struct tty *tty)
 		tty->flags &= ~TTY_TIMER;
 		evbuffer_drain(tty->in, len);
 		return (1);
+	}
+
+	switch (tty_query_reply(tty, buf, len, &size)) {
+	case 0:
+		key = KEYC_UNKNOWN;
+		goto complete_key;
+	case 1:
+		query_partial = 1;
+		goto partial_key;
 	}
 
 	/* Is this a clipboard response? */
@@ -999,7 +1008,7 @@ partial_key:
 		if (delay < 500)
 			delay = 500;
 	}
-	if (tty->flags & (TTY_WAITFG|TTY_WAITBG) ||
+	if (query_partial || tty->flags & (TTY_WAITFG|TTY_WAITBG) ||
 	    tty->flags & (TTY_OSC52QUERY|TTY_WINSIZEQUERY) ||
 	    (tty->flags & TTY_ALL_REQUEST_FLAGS) != TTY_ALL_REQUEST_FLAGS ||
 	    !TAILQ_EMPTY(&c->input_requests)) {
