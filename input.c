@@ -3655,10 +3655,11 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 	switch (type) {
 	case INPUT_REQUEST_PALETTE:
 		xsnprintf(s, sizeof s, "\033]4;%d;?\033\\", idx);
-		tty_puts(&c->tty, s);
+		tty_query_puts(&c->tty, s);
 		break;
 	case INPUT_REQUEST_CLIPBOARD:
-		tty_putcode_ss(&c->tty, TTYC_MS, "", "?");
+		tty_query_puts(&c->tty, tty_term_string_ss(c->tty.term,
+		    TTYC_MS, "", "?"));
 		break;
 	case INPUT_REQUEST_QUEUE:
 		break;

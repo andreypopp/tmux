@@ -144,7 +144,7 @@ tty_resize(struct tty *tty)
 		    tty->out != NULL &&
 		    !(tty->flags & TTY_WINSIZEQUERY) &&
 		    (tty->term->flags & TERM_VT100LIKE)) {
-			tty_puts(tty, "\033[18t\033[14t");
+			tty_query_puts(tty, "\033[18t\033[14t");
 			tty->flags |= TTY_WINSIZEQUERY;
 		}
 	} else {
@@ -385,7 +385,7 @@ tty_start_tty(struct tty *tty)
 
 	if (tty->term->flags & TERM_VT100LIKE) {
 		/* Subscribe to theme changes and request theme now. */
-		tty_puts(tty, "\033[?2031h\033[?996n");
+		tty_query_puts(tty, "\033[?2031h\033[?996n");
 	}
 
 	tty_start_start_timer(tty);
@@ -409,14 +409,14 @@ tty_send_requests(struct tty *tty)
 
 	if (tty->term->flags & TERM_VT100LIKE) {
 		if (~tty->flags & TTY_HAVEDA)
-			tty_puts(tty, "\033[c");
+			tty_query_puts(tty, "\033[c");
 		if (~tty->flags & TTY_HAVEDA2)
-			tty_puts(tty, "\033[>c");
+			tty_query_puts(tty, "\033[>c");
 		if (~tty->flags & TTY_HAVEXDA)
-			tty_puts(tty, "\033[>q");
+			tty_query_puts(tty, "\033[>q");
 		if (~tty->flags & TTY_HAVESYNC)
-			tty_puts(tty, "\033[?2026$p");
-		tty_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
+			tty_query_puts(tty, "\033[?2026$p");
+		tty_query_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
 		tty->flags |= (TTY_WAITBG|TTY_WAITFG);
 	} else
 		tty->flags |= TTY_ALL_REQUEST_FLAGS;
@@ -443,7 +443,7 @@ tty_repeat_requests(struct tty *tty, int force)
 	tty->last_requests = t;
 
 	if (tty->term->flags & TERM_VT100LIKE) {
-		tty_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
+		tty_query_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
 		tty->flags |= (TTY_WAITBG|TTY_WAITFG);
 	}
 	tty_start_start_timer(tty);
@@ -525,6 +525,7 @@ tty_close(struct tty *tty)
 	if (event_initialized(&tty->key_timer))
 		evtimer_del(&tty->key_timer);
 	tty_stop_tty(tty);
+	tty_query_free(tty);
 
 	if (tty->flags & TTY_OPENED) {
 		evbuffer_free(tty->in);
@@ -2029,6 +2030,7 @@ void
 tty_cmd_rawstring(struct tty *tty, const struct tty_ctx *ctx)
 {
 	tty->flags |= TTY_NOBLOCK;
+	tty_query_add(tty, ctx->data.data, ctx->data.size, ctx);
 	tty_add(tty, ctx->data.data, ctx->data.size);
 	tty_invalidate(tty);
 }
@@ -3048,7 +3050,8 @@ tty_clipboard_query(struct tty *tty)
 	struct timeval	 tv = { .tv_sec = TTY_QUERY_TIMEOUT };
 
 	if ((tty->flags & TTY_STARTED) && (~tty->flags & TTY_OSC52QUERY)) {
-		tty_putcode_ss(tty, TTYC_MS, "", "?");
+		tty_query_puts(tty, tty_term_string_ss(tty->term, TTYC_MS,
+		    "", "?"));
 		tty->flags |= TTY_OSC52QUERY;
 		evtimer_add(&tty->clipboard_timer, &tv);
 	}

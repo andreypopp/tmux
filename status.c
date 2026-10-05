@@ -510,6 +510,7 @@ status_side_job_gone(struct client *c)
 		ss->ictx = NULL;
 	}
 	ss->job = NULL;
+	ss->generation++;
 	status_side_set_focus(c, 0);
 	c->flags |= CLIENT_REDRAWSIDESTATUS;
 }
