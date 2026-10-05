@@ -213,6 +213,7 @@ dist_tmux_SOURCES = \
 	tty-draw.c \
 	tty-features.c \
 	tty-keys.c \
+	tty-query.c \
 	tty-term.c \
 	tty.c \
 	utf8-combined.c \

@@ -270,6 +270,7 @@ screen_write_initctx(struct screen_write_ctx *ctx, struct tty_ctx *ttyctx,
 	memset(ttyctx, 0, sizeof *ttyctx);
 
 	ttyctx->s = s;
+	ttyctx->wp = ctx->wp;
 	ttyctx->sx = screen_size_x(s);
 	ttyctx->sy = screen_size_y(s);
 
