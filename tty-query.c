@@ -49,34 +49,43 @@ struct tty_queries {
 };
 
 static int
-tty_query_frame(const char *buf, size_t len, size_t *size)
+tty_query_step(const char *buf, size_t len)
 {
-	size_t i;
+	char ch = buf[len - 1];
 
 	if (buf[0] != '\033')
 		return (-1);
 	if (len == 1)
 		return (1);
 	if (buf[1] == '[') {
-		for (i = 2; i < len; i++) {
-			if (buf[i] >= 0x40 && buf[i] <= 0x7e) {
-				*size = i + 1;
-				return (0);
-			}
-			if (buf[i] < 0x20 || buf[i] > 0x3f)
-				return (-1);
-		}
+		if (len == 2)
+			return (1);
+		if (ch >= 0x40 && ch <= 0x7e)
+			return (0);
+		if (ch < 0x20 || ch > 0x3f)
+			return (-1);
 	} else if (buf[1] == '_' || buf[1] == 'P' || buf[1] == ']') {
-		for (i = 2; i < len; i++) {
-			if ((buf[1] == ']' && buf[i] == '\007') ||
-			    (buf[i] == '\\' && buf[i - 1] == '\033')) {
-				*size = i + 1;
-				return (0);
-			}
-		}
-	} else {
-		*size = 2;
+		if (len > 2 && ((buf[1] == ']' && ch == '\007') ||
+		    (ch == '\\' && buf[len - 2] == '\033')))
+			return (0);
+	} else
 		return (0);
+	return (1);
+}
+
+static int
+tty_query_frame(const char *buf, size_t len, size_t *size)
+{
+	size_t i;
+	int n;
+
+	for (i = 1; i <= len; i++) {
+		n = tty_query_step(buf, i);
+		if (n != 1) {
+			if (n == 0)
+				*size = i;
+			return (n);
+		}
 	}
 	return (1);
 }
@@ -110,13 +119,17 @@ tty_query_parse(const char *buf, size_t len, int reply, u_int *id)
 			}
 		}
 		end = tmp + len - 1;
-		if ((!reply && (strcmp(body, "c") == 0 || strcmp(body, "0c") == 0)) ||
-		    (reply && *body == '?' && *end == 'c' && isdigit((u_char)body[1]) &&
-		    strspn(body + 1, "0123456789;") == len - 4))
+		if (reply && (*body == '?' || *body == '>') &&
+		    isdigit((u_char)body[1]) &&
+		    strspn(body + 1, "0123456789;") == len - 4) {
+			if (*end == 'c')
+				return (*body == '?' ? TTY_QUERY_DA : TTY_QUERY_DA2);
+			if (*body == '?' && *end == 'u')
+				return (TTY_QUERY_KEYBOARD);
+		}
+		if (!reply && (strcmp(body, "c") == 0 || strcmp(body, "0c") == 0))
 			return (TTY_QUERY_DA);
-		if ((!reply && (strcmp(body, ">c") == 0 || strcmp(body, ">0c") == 0)) ||
-		    (reply && *body == '>' && *end == 'c' && isdigit((u_char)body[1]) &&
-		    strspn(body + 1, "0123456789;") == len - 4))
+		if (!reply && (strcmp(body, ">c") == 0 || strcmp(body, ">0c") == 0))
 			return (TTY_QUERY_DA2);
 		if (!reply && strcmp(body, ">q") == 0)
 			return (TTY_QUERY_VERSION);
@@ -124,9 +137,7 @@ tty_query_parse(const char *buf, size_t len, int reply, u_int *id)
 		    (reply && sscanf(body, "%u;%uR%n", &value, &second, &used) == 2 &&
 		    used != 0 && body[used] == '\0'))
 			return (TTY_QUERY_CURSOR);
-		if ((!reply && strcmp(body, "?u") == 0) ||
-		    (reply && *body == '?' && *end == 'u' && isdigit((u_char)body[1]) &&
-		    strspn(body + 1, "0123456789;") == len - 4))
+		if (!reply && strcmp(body, "?u") == 0)
 			return (TTY_QUERY_KEYBOARD);
 		used = 0;
 		if (sscanf(body, "%ut%n", &value, &used) == 1 && used != 0 &&
@@ -198,8 +209,9 @@ tty_query_add(struct tty *tty, const char *buf, size_t len,
 {
 	struct tty_queries	*qs = tty->queries;
 	struct tty_query	*q;
+	const char		*next;
 	enum tty_query_kind	 kind;
-	size_t			 i, size;
+	size_t			 i;
 	u_int			 id, count;
 	int			 n;
 
@@ -211,8 +223,10 @@ tty_query_add(struct tty *tty, const char *buf, size_t len,
 	}
 	for (i = 0; i < len; i++) {
 		if (qs->length == 0) {
-			if (buf[i] != '\033')
-				continue;
+			next = memchr(buf + i, '\033', len - i);
+			if (next == NULL)
+				break;
+			i = next - buf;
 			qs->owner = TTY_QUERY_TMUX;
 			qs->target = 0;
 			if (ctx != NULL && ctx->wp != NULL) {
@@ -225,11 +239,11 @@ tty_query_add(struct tty *tty, const char *buf, size_t len,
 			}
 		}
 		qs->pending[qs->length++] = buf[i];
-		n = tty_query_frame(qs->pending, qs->length, &size);
+		n = tty_query_step(qs->pending, qs->length);
 		if (n == 1 && qs->length < TTY_QUERY_LIMIT)
 			continue;
 		if (n == 0) {
-			kind = tty_query_parse(qs->pending, size, 0, &id);
+			kind = tty_query_parse(qs->pending, qs->length, 0, &id);
 			if (kind != TTY_QUERY_NONE) {
 				count = 0;
 				TAILQ_FOREACH(q, &qs->list, entry)
@@ -271,6 +285,11 @@ tty_query_reply(struct tty *tty, const char *buf, size_t len, size_t *size)
 	n = tty_query_frame(buf, len, size);
 	if (n != 0)
 		return (n);
+	if (buf[1] == '[') {
+		if (strchr("ycRutn", buf[*size - 1]) == NULL)
+			return (-1);
+	} else if (buf[1] != 'P' && buf[1] != '_' && buf[1] != ']')
+		return (-1);
 	kind = tty_query_parse(buf, *size, 1, &id);
 	if (kind == TTY_QUERY_NONE)
 		return (-1);
