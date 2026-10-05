@@ -1021,7 +1021,8 @@ input_parse(struct input_ctx *ictx, const u_char *buf, size_t len)
 			input_set_state(ictx, itr);
 
 		/* If not in ground state, save input. */
-		if (ictx->state != &input_state_ground)
+		if (ictx->state != &input_state_ground &&
+		    (~ictx->flags & INPUT_DISCARD))
 			evbuffer_add(ictx->since_ground, &ictx->ch, 1);
 	}
 }
@@ -1298,6 +1299,8 @@ input_input(struct input_ctx *ictx)
 {
 	size_t available;
 
+	if (ictx->flags & INPUT_DISCARD)
+		return (0);
 	available = ictx->input_space;
 	while (ictx->input_len + 1 >= available) {
 		available *= 2;
@@ -3689,10 +3692,11 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 	switch (type) {
 	case INPUT_REQUEST_PALETTE:
 		xsnprintf(s, sizeof s, "\033]4;%d;?\033\\", idx);
-		tty_puts(&c->tty, s);
+		tty_query_puts(&c->tty, s);
 		break;
 	case INPUT_REQUEST_CLIPBOARD:
-		tty_putcode_ss(&c->tty, TTYC_MS, "", "?");
+		tty_query_puts(&c->tty, tty_term_string_ss(c->tty.term,
+		    TTYC_MS, "", "?"));
 		break;
 	case INPUT_REQUEST_QUEUE:
 		break;
