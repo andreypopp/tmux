@@ -27,6 +27,7 @@
 #include "tmux.h"
 
 #include <ctype.h>
+#include <resolv.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,7 +49,6 @@ struct program_status {
 	struct program_record records[PROGRAM_RECORDS];
 	u_int count;
 	int real, dirty;
-	uint64_t serial;
 	struct event timer;
 	struct program_payload *payload;
 };
@@ -94,13 +94,11 @@ program_trim(char *s)
 static int
 program_text(const char *s, size_t cap)
 {
-	static const char alphabet[] =
-	    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	char encoded[685];
 	u_char decoded[512];
-	size_t n = strlen(s), unpadded = n, out = 0, i;
-	unsigned int bits = 0, value = 0, cp, minimum;
-	const char *digit;
-	int more;
+	size_t n = strlen(s), unpadded = n, out, i;
+	unsigned int cp, minimum;
+	int more, decoded_len;
 
 	while (unpadded > 0 && s[unpadded - 1] == '=')
 		unpadded--;
@@ -108,21 +106,13 @@ program_text(const char *s, size_t cap)
 	    (n != unpadded && (n % 4 != 0 ||
 	    n - unpadded != (4 - unpadded % 4) % 4)))
 		return (0);
-	for (i = 0; i < unpadded; i++) {
-		digit = strchr(alphabet, s[i]);
-		if (digit == NULL)
-			return (0);
-		value = (value << 6) | (digit - alphabet);
-		bits += 6;
-		if (bits >= 8) {
-			bits -= 8;
-			if (out == cap)
-				return (0);
-			decoded[out++] = (value >> bits) & 255;
-		}
-	}
-	if (bits != 0 && (value & ((1U << bits) - 1)) != 0)
+	memcpy(encoded, s, n);
+	while (n % 4 != 0)
+		encoded[n++] = '=';
+	encoded[n] = '\0';
+	if ((decoded_len = b64_pton(encoded, decoded, cap)) == -1)
 		return (0);
+	out = decoded_len;
 	for (i = 0; i < out;) {
 		cp = decoded[i++];
 		minimum = 0;
@@ -262,9 +252,9 @@ program_emit(struct window_pane *wp)
 
 	payload = xcalloc(1, sizeof *payload);
 	payload->references = 1;
-	payload->serial = ++ps->serial;
+	payload->serial = ps->payload == NULL ? 1 : ps->payload->serial + 1;
 	evbuffer_add_printf(buffer, "{\"serial\":%llu,\"records\":[",
-	    (unsigned long long)ps->serial);
+	    (unsigned long long)payload->serial);
 	for (i = 0; i < ps->count; i++)
 		order[i] = &ps->records[i];
 	qsort(order, ps->count, sizeof *order, program_compare);
@@ -285,27 +275,11 @@ program_emit(struct window_pane *wp)
 		evbuffer_add(buffer, "}", 1);
 	}
 	evbuffer_add(buffer, "]}", 2);
-	payload->text = xmalloc(EVBUFFER_LENGTH(buffer) + 1);
-	memcpy(payload->text, EVBUFFER_DATA(buffer), EVBUFFER_LENGTH(buffer));
-	payload->text[EVBUFFER_LENGTH(buffer)] = '\0';
+	payload->text = xmemdup(EVBUFFER_DATA(buffer), EVBUFFER_LENGTH(buffer));
 	evbuffer_free(buffer);
 	program_payload_unref(ps->payload);
 	ps->payload = payload;
 	control_program_status(wp, payload);
-}
-
-static void
-program_timer(__unused int fd, __unused short events, void *data)
-{
-	struct window_pane *wp = data;
-	struct program_status *ps = wp->program_status;
-	struct timeval tv = { 0, 100000 };
-
-	if (ps->dirty) {
-		ps->dirty = 0;
-		program_emit(wp);
-		evtimer_add(&ps->timer, &tv);
-	}
 }
 
 static void
@@ -319,6 +293,18 @@ program_changed(struct window_pane *wp)
 	else {
 		program_emit(wp);
 		evtimer_add(&ps->timer, &tv);
+	}
+}
+
+static void
+program_timer(__unused int fd, __unused short events, void *data)
+{
+	struct window_pane *wp = data;
+	struct program_status *ps = wp->program_status;
+
+	if (ps->dirty) {
+		ps->dirty = 0;
+		program_changed(wp);
 	}
 }
 
@@ -345,26 +331,29 @@ program_status_report(struct window_pane *wp, const char *body, int real)
 {
 	struct program_record r;
 	struct program_status *ps;
-	u_int i;
+	u_int i, j;
 	size_t len;
-	int changed = 0;
+	int changed;
 
-	if (wp == NULL || !program_parse(body, &r))
+	if (wp == NULL || (!real && wp->program_status != NULL &&
+	    wp->program_status->real) || !program_parse(body, &r))
 		return;
 	ps = program_get(wp);
-	if (!real && ps->real)
-		return;
 	if (real)
 		ps->real = 1;
 	if (r.state == PROGRAM_CLEAR) {
-		len = strlen(r.id);
-		for (i = 0; i < ps->count;) {
-			if (len == 0 || (strncmp(r.id, ps->records[i].id, len) == 0 &&
-			    (ps->records[i].id[len] == '\0' || ps->records[i].id[len] == '/'))) {
-				program_remove(ps, i);
-				changed = 1;
-			} else
-				i++;
+		if (*r.id == '\0') {
+			changed = ps->count != 0;
+			ps->count = 0;
+		} else {
+			len = strlen(r.id);
+			for (i = 0, j = 0; i < ps->count; i++) {
+				if (strncmp(r.id, ps->records[i].id, len) != 0 ||
+				    (ps->records[i].id[len] != '\0' && ps->records[i].id[len] != '/'))
+					ps->records[j++] = ps->records[i];
+			}
+			changed = j != ps->count;
+			ps->count = j;
 		}
 		if (changed)
 			program_changed(wp);
@@ -386,22 +375,23 @@ void
 program_status_clear(struct window_pane *wp, int reset)
 {
 	struct program_status *ps = wp->program_status;
-	u_int i;
-	int changed = 0;
+	u_int i, j, count;
 
 	if (ps == NULL)
 		return;
-	if (reset)
+	count = ps->count;
+	if (reset) {
 		ps->real = 0;
-	for (i = 0; i < ps->count;) {
-		if (reset || (ps->records[i].state != PROGRAM_DONE &&
-		    ps->records[i].state != PROGRAM_ERROR)) {
-			program_remove(ps, i);
-			changed = 1;
-		} else
-			i++;
+		ps->count = 0;
+	} else {
+		for (i = 0, j = 0; i < ps->count; i++) {
+			if (ps->records[i].state == PROGRAM_DONE ||
+			    ps->records[i].state == PROGRAM_ERROR)
+				ps->records[j++] = ps->records[i];
+		}
+		ps->count = j;
 	}
-	if (changed)
+	if (ps->count != count)
 		program_changed(wp);
 }
 

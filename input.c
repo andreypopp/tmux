@@ -1286,7 +1286,7 @@ input_input(struct input_ctx *ictx)
 	if (ictx->flags & INPUT_DISCARD)
 		return (0);
 	if (ictx->state == &input_state_osc_string &&
-	    ictx->input_len >= 4093 &&
+	    ictx->input_len == 4093 &&
 	    strncmp(ictx->input_buf, "7501;", 5) == 0) {
 		ictx->flags |= INPUT_DISCARD;
 		return (0);
