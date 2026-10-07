@@ -1634,6 +1634,7 @@ window_pane_utmp_remove(__unused struct window_pane *wp)
 static void
 window_pane_destroy(struct window_pane *wp)
 {
+	program_status_free(wp);
 	window_pane_wait_finish(wp);
 	spawn_editor_finish(wp);
 
@@ -1658,7 +1659,7 @@ window_pane_destroy(struct window_pane *wp)
 		 * terminal gets no hangup when the master is closed, so
 		 * signal it directly.
 		 */
-		if (~wp->flags & PANE_EXITED)
+		if (~wp->flags & PANE_EXITED && wp->pid > 0)
 			kill(wp->pid, SIGHUP);
 	}
 	if (wp->ictx != NULL) {
