@@ -95,7 +95,7 @@ static int
 program_text(const char *s, size_t cap)
 {
 	char encoded[685];
-	u_char decoded[512];
+	u_char decoded[513];
 	size_t n = strlen(s), unpadded = n, out, i;
 	unsigned int cp, minimum;
 	int more, decoded_len;
@@ -110,7 +110,12 @@ program_text(const char *s, size_t cap)
 	while (n % 4 != 0)
 		encoded[n++] = '=';
 	encoded[n] = '\0';
-	if ((decoded_len = b64_pton(encoded, decoded, cap)) == -1)
+	/*
+	 * glibc's b64_pton needs a spare byte to decode a final partial group,
+	 * even when the decoded data fits.
+	 */
+	decoded_len = b64_pton(encoded, decoded, cap + 1);
+	if (decoded_len == -1 || (size_t)decoded_len > cap)
 		return (0);
 	out = decoded_len;
 	for (i = 0; i < out;) {

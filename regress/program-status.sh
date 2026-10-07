@@ -304,9 +304,12 @@ assert updates[-1]['serial'] > leading[0]['serial']
 # Spaced writes cannot collapse merely because one PTY read contained them all.
 time.sleep(.12)
 cadence = b''
+# Written directly: a round trip per write takes longer than the throttle
+# window under a sanitizer build.
 for i in range(12):
-    report('state=working:progress=%d' % i, settle=False)
+    os.write(writer, b'\x1b]7501;state=working:progress=%d\x07' % i)
     cadence += drain(c1, .025)
+report('state=working:progress=11', settle=False)
 cadence += drain(c1, .15)
 assert 2 <= len(statuses(cadence)) < 8, len(statuses(cadence))
 assert statuses(cadence)[-1] == snapshot()
