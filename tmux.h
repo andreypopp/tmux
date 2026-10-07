@@ -1390,6 +1390,7 @@ struct window_pane {
 	size_t		 base_offset;
 
 	struct window_pane_resizes resize_queue;
+	struct program_status *program_status;
 	struct event	 resize_timer;
 	struct event	 sync_timer;
 
@@ -4103,6 +4104,21 @@ void	monitor_add(struct monitor_set *, const char *, enum monitor_type, int,
 void	monitor_remove(struct monitor_set *, const char *);
 u_int	monitor_get_fire_count(struct monitor_set *, const char *);
 time_t	monitor_get_fire_time(struct monitor_set *, const char *);
+
+struct program_payload {
+	u_int references;
+	uint64_t serial;
+	char *text;
+};
+
+/* program-status.c */
+void program_status_report(struct window_pane *, const char *, int);
+void program_status_clear(struct window_pane *, int);
+void program_status_free(struct window_pane *);
+const char *program_status_format(struct window_pane *);
+void program_payload_unref(struct program_payload *);
+void control_program_status(struct window_pane *, struct program_payload *);
+void control_program_status_discard(struct window_pane *);
 
 /* control.c */
 void	control_discard(struct client *);

@@ -1285,6 +1285,12 @@ input_input(struct input_ctx *ictx)
 
 	if (ictx->flags & INPUT_DISCARD)
 		return (0);
+	if (ictx->state == &input_state_osc_string &&
+	    ictx->input_len >= 4093 &&
+	    strncmp(ictx->input_buf, "7501;", 5) == 0) {
+		ictx->flags |= INPUT_DISCARD;
+		return (0);
+	}
 	available = ictx->input_space;
 	while (ictx->input_len + 1 >= available) {
 		available *= 2;
@@ -1406,6 +1412,8 @@ input_esc_dispatch(struct input_ctx *ictx)
 
 	switch (entry->type) {
 	case INPUT_ESC_RIS:
+		if (ictx->wp != NULL)
+			program_status_clear(ictx->wp, 1);
 		colour_palette_clear(ictx->palette);
 		input_reset_cell(ictx);
 		screen_write_reset(sctx);
@@ -2713,8 +2721,11 @@ input_exit_osc(struct input_ctx *ictx)
 	    ictx->input_end == INPUT_END_ST ? "ST" : "BEL");
 
 	option = 0;
-	while (*p >= '0' && *p <= '9')
+	while (*p >= '0' && *p <= '9') {
+		if (option > (UINT_MAX - (*p - '0')) / 10)
+			return;
 		option = option * 10 + *p++ - '0';
+	}
 	if (*p != ';' && *p != '\0')
 		return;
 	if (*p == ';')
@@ -2772,6 +2783,16 @@ input_exit_osc(struct input_ctx *ictx)
 		break;
 	case 133:
 		input_osc_133(ictx, p);
+		break;
+	case 7501:
+		if (ictx->input_len + 2 +
+		    (ictx->input_end == INPUT_END_ST ? 2 : 1) > 4096)
+			break;
+		if (strcmp(p, "?") == 0)
+			input_reply(ictx, 1, ictx->input_end == INPUT_END_ST ?
+			    "\033]7501;?\033\\" : "\033]7501;?\007");
+		else
+			program_status_report(wp, p, 1);
 		break;
 	default:
 		log_debug("%s: unknown '%u'", __func__, option);
@@ -3019,6 +3040,15 @@ static void
 input_set_progress_bar(struct input_ctx *ictx, enum progress_bar_state state,
     int p)
 {
+	char report[64];
+	const char *status;
+
+	status = state == 0 ? "idle" : state == 2 ? "error" : "working";
+	if (p == -1 || state == 3)
+		xsnprintf(report, sizeof report, "state=%s", status);
+	else
+		xsnprintf(report, sizeof report, "state=%s:progress=%d", status, p);
+	program_status_report(ictx->wp, report, 0);
 	screen_set_progress_bar(ictx->ctx.s, state, p);
 	if (ictx->wp != NULL) {
 		server_redraw_window_borders(ictx->wp->window);
@@ -3324,6 +3354,8 @@ input_osc_133(struct input_ctx *ictx, const char *p)
 	switch (*p) {
 	case 'A':
 	case 'N':
+		if (*p == 'A' && wp != NULL)
+			program_status_clear(wp, 0);
 		if (gl != NULL) {
 			memset(&gl->osc133_data, 0, sizeof gl->osc133_data);
 			gl->osc133_data.prompt_col = s->cx;

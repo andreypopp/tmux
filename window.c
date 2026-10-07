@@ -1583,6 +1583,7 @@ window_pane_scrollbar_redraw_visibility(struct window_pane *wp)
 static void
 window_pane_destroy(struct window_pane *wp)
 {
+	program_status_free(wp);
 	window_pane_wait_finish(wp);
 	spawn_editor_finish(wp);
 

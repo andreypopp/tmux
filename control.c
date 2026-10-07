@@ -64,6 +64,12 @@ struct control_line {
 	TAILQ_ENTRY(control_line)	 entry;
 };
 
+struct control_status {
+	u_int pane;
+	struct program_payload *payload;
+	TAILQ_ENTRY(control_status) entry;
+};
+
 /* Control client pane. */
 struct control_pane {
 	u_int				 pane;
@@ -103,6 +109,7 @@ RB_HEAD(control_windows, control_window);
 struct control_state {
 	struct control_panes		 panes;
 	struct control_windows		 windows;
+	TAILQ_HEAD(, control_status)	 program_status;
 
 	TAILQ_HEAD(, control_pane)	 pending_list;
 	u_int				 pending_count;
@@ -285,6 +292,54 @@ control_discard_pane(struct client *c, struct control_pane *cp)
 	TAILQ_FOREACH_SAFE(cb, &cp->blocks, entry, cb1) {
 		TAILQ_REMOVE(&cp->blocks, cb, entry);
 		control_free_block(cs, cb);
+	}
+}
+
+void
+control_program_status(struct window_pane *wp, struct program_payload *payload)
+{
+	struct client		*c;
+	struct control_state	*cs;
+	struct control_status	*status;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		cs = c->control_state;
+		if (cs == NULL || (c->flags & (CLIENT_EXIT|CLIENT_CONTROL_DISCARD)))
+			continue;
+		TAILQ_FOREACH(status, &cs->program_status, entry) {
+			if (status->pane == wp->id)
+				break;
+		}
+		if (status == NULL) {
+			status = xcalloc(1, sizeof *status);
+			status->pane = wp->id;
+			TAILQ_INSERT_TAIL(&cs->program_status, status, entry);
+		}
+		program_payload_unref(status->payload);
+		status->payload = payload;
+		payload->references++;
+		bufferevent_enable(cs->write_event, EV_WRITE);
+	}
+}
+
+void
+control_program_status_discard(struct window_pane *wp)
+{
+	struct client		*c;
+	struct control_state	*cs;
+	struct control_status	*status, *status1;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		cs = c->control_state;
+		if (cs == NULL)
+			continue;
+		TAILQ_FOREACH_SAFE(status, &cs->program_status, entry, status1) {
+			if (status->pane != wp->id)
+				continue;
+			TAILQ_REMOVE(&cs->program_status, status, entry);
+			program_payload_unref(status->payload);
+			free(status);
+		}
 	}
 }
 
@@ -932,9 +987,24 @@ control_write_callback(__unused struct bufferevent *bufev, void *data)
 	struct control_state	*cs = c->control_state;
 	struct control_pane	*cp, *cp1;
 	struct evbuffer		*evb = cs->write_event->output;
+	struct control_status	*status;
 	size_t			 space, limit;
 
 	control_flush_all_blocks(c);
+
+	if (cs->guard_depth == 0 && TAILQ_EMPTY(&cs->all_blocks)) {
+		while ((status = TAILQ_FIRST(&cs->program_status)) != NULL) {
+			if (EVBUFFER_LENGTH(evb) >= CONTROL_BUFFER_HIGH)
+				break;
+			evbuffer_add_printf(evb, "%%program-status %%%u %llu %s\n",
+			    status->pane,
+			    (unsigned long long)status->payload->serial,
+			    status->payload->text);
+			TAILQ_REMOVE(&cs->program_status, status, entry);
+			program_payload_unref(status->payload);
+			free(status);
+		}
+	}
 
 	while (EVBUFFER_LENGTH(evb) < CONTROL_BUFFER_HIGH) {
 		if (cs->pending_count == 0)
@@ -1007,6 +1077,7 @@ control_start(struct client *c)
 	TAILQ_INIT(&cs->pending_list);
 	TAILQ_INIT(&cs->all_blocks);
 	TAILQ_INIT(&cs->deferred);
+	TAILQ_INIT(&cs->program_status);
 	cs->subs = monitor_create_client(c, control_sub_change, NULL);
 
 	cs->read_event = bufferevent_new(c->fd, control_read_callback,
@@ -1072,12 +1143,18 @@ control_stop(struct client *c)
 	struct control_block	*cb, *cb1;
 	struct control_window	*cw, *cw1;
 	struct control_line	*cl, *cl1;
+	struct control_status	*status, *status1;
 
 	if (cs == NULL)
 		return;
 
 	monitor_destroy(cs->subs);
 
+	TAILQ_FOREACH_SAFE(status, &cs->program_status, entry, status1) {
+		TAILQ_REMOVE(&cs->program_status, status, entry);
+		program_payload_unref(status->payload);
+		free(status);
+	}
 	TAILQ_FOREACH_SAFE(cl, &cs->deferred, entry, cl1) {
 		TAILQ_REMOVE(&cs->deferred, cl, entry);
 		free(cl->line);
