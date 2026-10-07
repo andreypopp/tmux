@@ -176,6 +176,7 @@ dist_tmux_SOURCES = \
 	hyperlinks.c \
 	input-keys.c \
 	input.c \
+	program-status.c \
 	job.c \
 	json.c \
 	key-bindings.c \

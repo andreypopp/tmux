@@ -328,6 +328,7 @@ spawn_pane(struct spawn_context *sc, char **cause)
 			sc->wp0->fd = -1;
 		}
 		window_pane_reset_mode_all(sc->wp0);
+		program_status_clear(sc->wp0, 1);
 		screen_reinit(&sc->wp0->base);
 		if (sc->wp0->ictx != NULL) {
 			input_free(sc->wp0->ictx);
