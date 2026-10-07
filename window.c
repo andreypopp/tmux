@@ -1609,7 +1609,7 @@ window_pane_destroy(struct window_pane *wp)
 		 * terminal gets no hangup when the master is closed, so
 		 * signal it directly.
 		 */
-		if (~wp->flags & PANE_EXITED)
+		if (~wp->flags & PANE_EXITED && wp->pid > 0)
 			kill(wp->pid, SIGHUP);
 	}
 	if (wp->ictx != NULL) {

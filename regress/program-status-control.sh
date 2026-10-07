@@ -153,9 +153,10 @@ if mode in ['memory', 'all']:
     send(b'\x07')
     print('discarded unterminated OSC pending buffer: PASS')
 
-os.close(writer)
+# Closing the writer ends the pane and its session, exiting attached clients.
 for p in clients:
     instruction(p, 'detach-client')
     os.set_blocking(p.stdout.fileno(), True)
     p.communicate(timeout=5)
+os.close(writer)
 PY
