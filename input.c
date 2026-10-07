@@ -1018,7 +1018,8 @@ input_parse(struct input_ctx *ictx, const u_char *buf, size_t len)
 			input_set_state(ictx, itr);
 
 		/* If not in ground state, save input. */
-		if (ictx->state != &input_state_ground)
+		if (ictx->state != &input_state_ground &&
+		    (~ictx->flags & INPUT_DISCARD))
 			evbuffer_add(ictx->since_ground, &ictx->ch, 1);
 	}
 }
@@ -1282,6 +1283,8 @@ input_input(struct input_ctx *ictx)
 {
 	size_t available;
 
+	if (ictx->flags & INPUT_DISCARD)
+		return (0);
 	available = ictx->input_space;
 	while (ictx->input_len + 1 >= available) {
 		available *= 2;
