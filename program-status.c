@@ -40,7 +40,7 @@ static const char *program_states[] = {
 };
 
 struct program_record {
-	char id[129], app[33], title[257], msg[685], kind[11];
+	char id[129], app[33], title[257], msg[2733], kind[11];
 	int title_set, msg_set, progress;
 	enum program_state state;
 };
@@ -94,8 +94,8 @@ program_trim(char *s)
 static int
 program_text(const char *s, size_t cap)
 {
-	char encoded[685];
-	u_char decoded[513];
+	char encoded[2733];
+	u_char decoded[2049];
 	size_t n = strlen(s), unpadded = n, out, i;
 	unsigned int cp, minimum;
 	int more, decoded_len;
@@ -167,7 +167,7 @@ program_parse(const char *body, struct program_record *r)
 		    (strcmp(key, "app") == 0 && len > 32) ||
 		    (strcmp(key, "id") == 0 && len > 128) ||
 		    (strcmp(key, "title") == 0 && len > 256) ||
-		    (strcmp(key, "msg") == 0 && len > 684))
+		    (strcmp(key, "msg") == 0 && len > 2732))
 			goto out;
 		if (*key == '\0' || strspn(key, "abcdefghijklmnopqrstuvwxyz")
 		    != strlen(key) || strspn(v,
@@ -189,7 +189,7 @@ program_parse(const char *body, struct program_record *r)
 			if (program_name(v))
 				strlcpy(r->app, v, sizeof r->app);
 		} else if (strcmp(key, "title") == 0 || strcmp(key, "msg") == 0) {
-			if (!program_text(v, strcmp(key, "title") == 0 ? 192 : 512))
+			if (!program_text(v, strcmp(key, "title") == 0 ? 192 : 2048))
 				goto out;
 			if (strcmp(key, "title") == 0) {
 				strlcpy(r->title, v, sizeof r->title);

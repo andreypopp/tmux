@@ -101,16 +101,20 @@ for body in ['app=x', 'state=sleeping', 'state=', 'state=IDLE',
              'state=done:app=' + 'x' * 33 + ':app=x',
              'state=done:' + 'x' * 17 + '=1',
              'state=done:' + 'x' * 17 + '=@',
-             'state=done:msg=' + 'x' * 685 + ':msg=',
+             'state=done:msg=' + 'x' * 2733 + ':msg=',
              'state=done:title=' + 'x' * 257 + ':title=',
              'state=done:app=' + 'x' * 33 + '@:app=x']:
     before = snapshot()
     assert report(body) == before, (body, before, snapshot())
 check('state=done:msg=UGxhbg', [{'id': '', 'state': 'done', 'msg': 'UGxhbg'}])
-msg512 = base64.b64encode(b'a' * 512).decode()
-check('state=done:msg=' + msg512, [{'id': '', 'state': 'done', 'msg': msg512}])
+msg2048 = base64.b64encode(b'a' * 2048).decode()
+check('state=done:msg=' + msg2048, [{'id': '', 'state': 'done', 'msg': msg2048}])
 before = snapshot()
-assert report('state=error:msg=' + base64.b64encode(b'a' * 513).decode()) == before
+# 2049 bytes encode to exactly 2732 characters, inside the encoded limit, so
+# the decoded limit is what rejects them.
+assert len(base64.b64encode(b'a' * 2049)) == 2732
+assert report('state=error:msg=' + base64.b64encode(b'a' * 2049).decode()) == before
+assert report('state=error:msg=' + 'QUFB' * 683 + 'QQ') == before
 title192 = base64.b64encode(b'a' * 192).decode()
 check('state=done:title=' + title192,
       [{'id': '', 'state': 'done', 'title': title192}])
@@ -330,7 +334,7 @@ assert statuses(guarded)[-1] == snapshot()
 # Stop reading: the socket fills, but updates must collapse to one unsent slot.
 slow = control()
 drain(slow)
-large = 'state=working:title=' + title192 + ':msg=' + msg512
+large = 'state=working:title=' + title192 + ':msg=' + msg2048
 for batch in range(16):
     for i in range(64):
         os.write(writer, ('\x1b]7501;' + large + ':id=r%02d\x07' % i).encode())
