@@ -99,6 +99,18 @@ try:
         if got==expected:break
         assert time.monotonic()<end,('split reply at escape-time=10',expected,got)
         select.select([],[],[],.01)
+    writer.write(wire.hex()+'\n'); read_until(request)
+    cmd('set-option','-g','@escape','no')
+    started=time.monotonic(); os.write(fd,b'\x1b')
+    while cmd('show-option','-gv','@escape')!=b'yes':
+        assert time.monotonic()-started<.25, 'lone Escape delayed by pending query'
+    assert time.monotonic()-started<.25, 'lone Escape delayed by pending query'
+    os.write(fd,reply)
+    expected+=reply; end=time.monotonic()+5
+    while open(output,'rb').read()!=expected:
+        assert time.monotonic()<end, 'reply after lone Escape missed its owner'
+        select.select([],[],[],.01)
+    print('lone Escape with pending query: PASS (%.3fs)' % (time.monotonic()-started))
     sidefifo=root+'/side-query'; sideoutput=root+'/side-reply'; os.mkfifo(sidefifo)
     sidecommand=' '.join(map(shlex.quote,[sys.executable,'-u',code,sidefifo,sideoutput]))
     cmd('set-option','-g','side-status','left')

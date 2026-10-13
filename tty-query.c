@@ -283,7 +283,7 @@ tty_query_partial(struct tty *tty, const char *buf, size_t len)
 		buf++;
 		len--;
 	}
-	if (tty_query_frame(buf, len, &size) != 1)
+	if (len < 2 || tty_query_frame(buf, len, &size) != 1)
 		return (0);
 	TAILQ_FOREACH(q, &qs->list, entry) {
 		if (get_timer() - q->time >= TTY_QUERY_TIMEOUT)
