@@ -404,7 +404,8 @@ tty_query_reply(struct tty *tty, const char *buf, size_t len, size_t *size)
 	if (kind == TTY_QUERY_NONE)
 		return (-1);
 	TAILQ_FOREACH(q, &qs->list, entry) {
-		if (q->kind == kind && q->id == id)
+		if (q->kind == kind && q->id == id &&
+		    get_timer() - q->time < TTY_QUERY_TIMEOUT)
 			break;
 	}
 	if (q == NULL)

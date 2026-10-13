@@ -120,6 +120,23 @@ try:
         assert time.monotonic()<end,('side sync reply',got,cmd('capture-pane','-p','-t',active))
         select.select([],[],[],.01)
     assert cmd('capture-pane','-p','-t',active)==b'', 'side reply leaked to active pane'
+    sideexpected=reply
+    request=b'\x1b[?25$p'; reply=b'\x1b[?25;1$y'
+    wire=b'\x1bPtmux;'+request.replace(b'\x1b',b'\x1b\x1b')+b'\x1b\\'
+    writer.write(wire.hex()+'\n'); read_until(request)
+    end=time.monotonic()+5.1
+    while time.monotonic()<end:
+        if select.select([fd],[],[],.05)[0]:os.read(fd,65536)
+    sidewriter.write(wire.hex()+'\n'); read_until(request)
+    os.write(fd,reply)
+    sideexpected+=reply; end=time.monotonic()+5
+    while True:
+        got=open(sideoutput,'rb').read()
+        if got==sideexpected:break
+        assert time.monotonic()<end,('expired pane query before fresh side query',sideexpected,got)
+        select.select([],[],[],.01)
+    assert open(output,'rb').read()==expected, 'reply went to expired owner'
+    print('expired query before fresh same-kind/id owner: PASS')
     sidewriter.close()
     print('query routing: PASS (all FIFO kinds, inactive owner, Escape before reply, split read at escape-time=10, unmatched modified F3, side-job sync)')
 finally:
