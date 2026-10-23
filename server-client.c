@@ -1403,6 +1403,7 @@ server_client_key_callback(struct cmdq_item *item, void *data)
 	uint64_t			 flags, prefix_delay;
 	struct cmd_find_state		 fs;
 	key_code			 key0, prefix, prefix2;
+	int				 is_prefix;
 
 	if (ec != NULL)
 		c = ec;
@@ -1454,6 +1455,28 @@ server_client_key_callback(struct cmdq_item *item, void *data)
 	/* Forward mouse keys if disabled. */
 	if (KEYC_IS_MOUSE(key) && !options_get_number(s->options, "mouse"))
 		goto forward_key;
+
+	/* Is this a prefix key? */
+	prefix = (key_code)options_get_number(s->options, "prefix");
+	prefix2 = (key_code)options_get_number(s->options, "prefix2");
+	key0 = (key & (KEYC_MASK_KEY|KEYC_MASK_MODIFIERS));
+	is_prefix = (key0 == (prefix & (KEYC_MASK_KEY|KEYC_MASK_MODIFIERS)) ||
+	    key0 == (prefix2 & (KEYC_MASK_KEY|KEYC_MASK_MODIFIERS)));
+
+	/*
+	 * A side status job takes keys while the client has the
+	 * side-status-focus flag and mouse events inside its area. The prefix
+	 * keys are left alone so key tables keep working, except inside a
+	 * bracketed paste which goes to the job whole. Read-only clients never
+	 * reach it.
+	 */
+	if (server_client_is_default_key_table(c, c->keytable) &&
+	    (~c->flags & CLIENT_READONLY) &&
+	    key != KEYC_FOCUS_IN &&
+	    key != KEYC_FOCUS_OUT &&
+	    (!is_prefix || server_client_is_bracket_paste(c, key)) &&
+	    status_side_key(c, event))
+		goto out;
 
 	/* Forward if bracket pasting. */
 	if (server_client_is_bracket_paste (c, key))
@@ -1878,6 +1901,7 @@ server_client_loop(void)
 		server_client_check_exit(c, 0);
 		if (c->session != NULL && c->session->curw != NULL) {
 			server_client_check_modes(c);
+			status_side_check(c);
 			server_client_check_redraw(c);
 			server_client_reset_state(c);
 		}
@@ -2143,13 +2167,14 @@ server_client_reset_state(struct client *c)
 	struct window_pane	*wp = w->active, *loop;
 	struct screen		*s = NULL;
 	struct options		*oo = c->session->options;
-	int			 mode = 0, cursor, flags, pane_mode = 0;
+	int			 mode = 0, cursor, flags, pane_mode = 0, side;
 	u_int			 cx = 0, cy = 0, ox, oy, sx, sy, prompt = 0;
 	u_int			 sb_w;
 	struct visible_ranges	*r;
 
 	if (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED))
 		return;
+	side = status_side_focused(c);
 
 	/* Disable the block flag. */
 	flags = (tty->flags & TTY_BLOCK);
@@ -2159,7 +2184,9 @@ server_client_reset_state(struct client *c)
 	if (w->menu != NULL) {
 		menu_get_cursor(w->menu, &cx, &cy);
 		s = menu_screen(w->menu);
-	} else if (wp != NULL && c->prompt == NULL)
+	} else if (side && c->prompt == NULL)
+		s = status_side_cursor(c, &cx, &cy);
+	else if (wp != NULL && c->prompt == NULL)
 		s = wp->screen;
 	else
 		s = c->status.active;
@@ -2178,7 +2205,7 @@ server_client_reset_state(struct client *c)
 	if (c->prompt != NULL) {
 		prompt = 1;
 		status_prompt_cursor(c, &cx, &cy);
-	} else if (wp != NULL) {
+	} else if (!side && wp != NULL) {
 		if (w->menu != NULL) {
 			tty_window_offset(tty, &ox, &oy, &sx, &sy);
 			if (cx < ox || cx >= ox + sx ||
@@ -2254,7 +2281,7 @@ server_client_reset_state(struct client *c)
 	 * movement events.
 	 */
 	if (options_get_number(oo, "mouse")) {
-		if (w->menu == NULL) {
+		if (w->menu == NULL && !side) {
 			mode &= ~ALL_MOUSE_MODES;
 			TAILQ_FOREACH(loop, &w->panes, entry) {
 				if (loop->screen->mode & MODE_MOUSE_ALL)
@@ -2475,9 +2502,10 @@ server_client_check_redraw(struct client *c)
 	if (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED))
 		return;
 	if (c->flags & CLIENT_ALLREDRAWFLAGS) {
-		log_debug("%s: redraw%s%s%s%s", c->name,
+		log_debug("%s: redraw%s%s%s%s%s", c->name,
 		    (c->flags & CLIENT_REDRAWWINDOW) ? " window" : "",
 		    (c->flags & CLIENT_REDRAWSTATUS) ? " status" : "",
+		    (c->flags & CLIENT_REDRAWSIDESTATUS) ? " side-status" : "",
 		    (c->flags & CLIENT_REDRAWBORDERS) ? " borders" : "",
 		    (c->flags & CLIENT_REDRAWMENU) ? " menu" : "");
 	}
@@ -3091,7 +3119,7 @@ void
 server_client_set_flags(struct client *c, const char *flags)
 {
 	char	*s, *copy, *next;
-	uint64_t flag;
+	uint64_t flag, old = c->flags;
 	int	 not;
 
 	s = copy = xstrdup(flags);
@@ -3110,6 +3138,8 @@ server_client_set_flags(struct client *c, const char *flags)
 			flag = CLIENT_IGNORESIZE;
 		else if (strcmp(next, "no-detach-on-destroy") == 0)
 			flag = CLIENT_NO_DETACH_ON_DESTROY;
+		else if (strcmp(next, "side-status-focus") == 0)
+			flag = CLIENT_SIDESTATUSFOCUS;
 		if (flag == 0)
 			continue;
 
@@ -3124,6 +3154,8 @@ server_client_set_flags(struct client *c, const char *flags)
 			control_reset_offsets(c);
 	}
 	free(copy);
+	if (((old ^ c->flags) & CLIENT_SIDESTATUSFOCUS) && c->session != NULL)
+		window_update_focus(c->session->curw->window);
 	proc_send(c->peer, MSG_FLAGS, -1, &c->flags, sizeof c->flags);
 }
 
@@ -3158,6 +3190,8 @@ server_client_get_flags(struct client *c)
 	}
 	if (c->flags & CLIENT_READONLY)
 		strlcat(s, "read-only,", sizeof s);
+	if (c->flags & CLIENT_SIDESTATUSFOCUS)
+		strlcat(s, "side-status-focus,", sizeof s);
 	if (c->flags & CLIENT_SUSPENDED)
 		strlcat(s, "suspended,", sizeof s);
 	if (c->flags & CLIENT_UTF8)

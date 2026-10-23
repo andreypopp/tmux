@@ -1254,7 +1254,7 @@ redraw_damage_scroll(struct window *w, u_int x, u_int y, u_int sx, u_int sy)
 void
 redraw_scroll_result(struct tty *tty, const struct tty_ctx *ctx, int failed)
 {
-	struct window_pane	*wp = ctx->arg;
+	struct window_pane	*wp = ctx->wp;
 	struct window		*w;
 
 	if (wp == NULL)
@@ -1947,6 +1947,8 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 	struct window_pane	*loop;
 	u_int			 width, i, y, lines, side_width;
 	int			 side_x;
+	struct grid_cell	 side_defaults;
+	struct tty_style_ctx	 side_style_ctx, *side_ctx;
 	struct redraw_span	*first;
 	int			 redraw;
 
@@ -2075,9 +2077,11 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 				y = dctx.status_lines;
 			else
 				y = 0;
+			side_ctx = status_side_style_ctx(c, &side_defaults,
+			    &side_style_ctx);
 			for (i = 0; i < status_side_rows(c); i++) {
 				tty_draw_line(tty, &c->side_status.screen, 0, i,
-				    side_width, side_x, y + i, NULL);
+				    side_width, side_x, y + i, side_ctx);
 			}
 		}
 	}
@@ -2152,6 +2156,8 @@ redraw_screen(struct client *c)
 		if (c->flags & (CLIENT_REDRAWSTATUS|CLIENT_REDRAWSTATUSALWAYS))
 			flags |= (REDRAW_STATUS|REDRAW_PANE_STATUS|
 			    REDRAW_SIDE_STATUS);
+		if (c->flags & CLIENT_REDRAWSIDESTATUS)
+			flags |= REDRAW_SIDE_STATUS;
 		if (c->flags & CLIENT_REDRAWMENU)
 			flags |= REDRAW_MENU;
 		if (c->session->curw->window->menu != NULL)

@@ -1882,6 +1882,7 @@ typedef void (*tty_ctx_redraw_cb)(const struct tty_ctx *, u_int, u_int);
 typedef int (*tty_ctx_set_client_cb)(struct tty_ctx *, struct client *);
 struct tty_ctx {
 	struct screen		*s;
+	struct window_pane	*wp;
 
 	tty_ctx_redraw_cb	 redraw_cb;
 	tty_ctx_set_client_cb	 set_client_cb;
@@ -2118,9 +2119,26 @@ struct side_status_line {
 	struct screen		 screen;
 
 	struct grid_cell	 style;
+	struct grid_cell	 linestyle;
 	char			*expanded;
 	int			 linex;
 	struct style_ranges	 ranges;
+
+	/* Job showing an interactive command instead of a format. */
+	struct screen		 jobscreen;
+	struct job		*job;
+	struct input_ctx	*ictx;
+	struct colour_palette	 palette;
+	char			*command;
+
+	/* When the job was last started. */
+	time_t			 started;
+
+	/* Job screen changed since it was last copied. */
+	int			 changed;
+
+	/* A direct write was dropped so the area must be redrawn. */
+	int			 dirty;
 };
 
 /* File in client. */
@@ -2337,12 +2355,15 @@ struct client {
 #define CLIENT_NO_DETACH_ON_DESTROY 0x8000000000ULL
 #define CLIENT_CONTROL_DISCARD 0x10000000000ULL
 #define CLIENT_SIDESTATUSOFF 0x20000000000ULL
+#define CLIENT_SIDESTATUSFOCUS 0x40000000000ULL
+#define CLIENT_REDRAWSIDESTATUS 0x80000000000ULL
 #define CLIENT_ALLREDRAWFLAGS		\
 	(CLIENT_REDRAWWINDOW|		\
 	 CLIENT_REDRAWSTATUS|		\
 	 CLIENT_REDRAWSTATUSALWAYS|	\
 	 CLIENT_REDRAWBORDERS|		\
-	 CLIENT_REDRAWMENU)
+	 CLIENT_REDRAWMENU|		\
+	 CLIENT_REDRAWSIDESTATUS)
 #define CLIENT_UNATTACHEDFLAGS	\
 	(CLIENT_DEAD|		\
 	 CLIENT_SUSPENDED|	\
@@ -3406,6 +3427,12 @@ void	 status_side_init(struct client *);
 void	 status_side_free(struct client *);
 int	 status_side_redraw(struct client *);
 struct style_range *status_side_get_range(struct client *, u_int, u_int);
+struct tty_style_ctx *status_side_style_ctx(struct client *,
+	     struct grid_cell *, struct tty_style_ctx *);
+void	 status_side_check(struct client *);
+int	 status_side_focused(struct client *);
+int	 status_side_key(struct client *, struct key_event *);
+struct screen *status_side_cursor(struct client *, u_int *, u_int *);
 struct style_range *status_get_range(struct client *, u_int, u_int);
 void	 status_init(struct client *);
 void	 status_free(struct client *);
