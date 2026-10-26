@@ -18,6 +18,7 @@
 
 #include <sys/types.h>
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -66,7 +67,9 @@ cmd_refresh_client_control_client_size(struct cmd *self, struct cmdq_item *item)
 	struct args		*args = cmd_get_args(self);
 	struct client		*tc = cmdq_get_target_client(item);
 	const char		*size = args_get(args, 'C');
-	u_int			 w, x, y;
+	u_int			 w, x, y, xp = 0, yp = 0, values[4], i;
+	char			*copy, *next, *field;
+	const char		*errstr, *separator;
 
 	if (sscanf(size, "@%u:%ux%u", &w, &x, &y) == 3) {
 		if (x < WINDOW_MINIMUM || x > WINDOW_MAXIMUM ||
@@ -89,7 +92,27 @@ cmd_refresh_client_control_client_size(struct cmd *self, struct cmdq_item *item)
 		return (CMD_RETURN_NORMAL);
 	}
 
-	if (sscanf(size, "%u,%u", &x, &y) != 2 &&
+	separator = strchr(size, 'x');
+	if (separator != NULL && strchr(separator + 1, 'x') != NULL) {
+		copy = next = xstrdup(size);
+		for (i = 0; i < 4; i++) {
+			field = strsep(&next, "x");
+			if (field == NULL)
+				break;
+			values[i] = strtonum(field, 0, UINT_MAX, &errstr);
+			if (errstr != NULL)
+				break;
+		}
+		free(copy);
+		if (i != 4 || next != NULL) {
+			cmdq_error(item, "bad size argument");
+			return (CMD_RETURN_ERROR);
+		}
+		x = values[0];
+		y = values[1];
+		xp = values[2];
+		yp = values[3];
+	} else if (sscanf(size, "%u,%u", &x, &y) != 2 &&
 	    sscanf(size, "%ux%u", &x, &y) != 2) {
 		cmdq_error(item, "bad size argument");
 		return (CMD_RETURN_ERROR);
@@ -99,7 +122,7 @@ cmd_refresh_client_control_client_size(struct cmd *self, struct cmdq_item *item)
 		cmdq_error(item, "size too small or too big");
 		return (CMD_RETURN_ERROR);
 	}
-	tty_set_size(&tc->tty, x, y, 0, 0);
+	tty_set_size(&tc->tty, x, y, xp, yp);
 	tc->flags |= CLIENT_SIZECHANGED;
 	recalculate_sizes_now(1);
 	return (CMD_RETURN_NORMAL);
