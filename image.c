@@ -28,6 +28,19 @@
 
 #include "tmux.h"
 
+struct image_frame {
+	u_char *pixels;
+	int gap;
+	u_int gen;
+};
+
+struct image_data {
+	struct image_payload payload;
+	void *base;
+	size_t length;
+	u_int references;
+};
+
 /* An image. */
 TAILQ_HEAD(image_list, image);
 struct image {
@@ -50,11 +63,11 @@ struct image {
 	size_t			 stride;
 	size_t			 size;
 	u_char			*pixels;
-	struct image_payload	 payload;
-	struct {
-		void		*base;
-		size_t		 length;
-	} mapping;
+	struct image_data	*data;
+	struct image_payload	 edited;
+	struct image_frame	*frames;
+	u_int			 nframes, gen;
+	int			 root_gap;
 
 	RB_ENTRY(image)		 entry;
 	TAILQ_ENTRY(image)	 all_entry;
@@ -330,14 +343,16 @@ image_free(struct image *im)
 	if (--im->references == 0) {
 		image_unstore(im);
 		if (im->parent == NULL) {
-			if (im->mapping.length != 0) {
-				image_size -= im->mapping.length;
-				munmap(im->mapping.base, im->mapping.length);
-			} else {
-				image_size -= im->size + im->payload.size;
-				free(im->payload.data);
+			if (im->data == NULL || im->pixels != im->data->payload.data) {
+				image_size -= im->size;
 				free(im->pixels);
 			}
+			image_data_free(im->data);
+			for (u_int i = 0; i < im->nframes; i++) {
+				image_size -= im->size;
+				free(im->frames[i].pixels);
+			}
+			free(im->frames);
 		} else {
 			TAILQ_REMOVE(&im->parent->children, im, child_entry);
 			image_free(im->parent);
@@ -355,30 +370,150 @@ image_get_parent(struct image *im)
 struct image_payload *
 image_get_payload(struct image *im)
 {
-	return (&im->payload);
+	return (im->data == NULL ? &im->edited : &im->data->payload);
+}
+
+static struct image_data *
+image_data_alloc(struct image_payload *payload, void *base, size_t length)
+{
+	struct image_data *data = xcalloc(1, sizeof *data);
+
+	data->references = 1;
+	data->payload = *payload;
+	data->base = base;
+	data->length = length;
+	image_size += length != 0 ? length : payload->size;
+	return (data);
 }
 
 int
-image_set_payload(struct image *im, struct image_payload *payload)
+image_set_data(struct image *im, struct image_payload *payload,
+    void *base, size_t length)
 {
-	if (image_check_limits(im, payload->size, 0) != 0)
-		return (-1);
-	im->payload = *payload;
-	image_size += payload->size;
-	return (0);
-}
+	int shared = im->pixels == payload->data, error;
+	size_t size = length != 0 ? length : payload->size;
 
-int
-image_set_mapping(struct image *im, void *base, size_t length,
-    struct image_payload *payload)
-{
-	int error = image_check_limits(im, length - im->size, 0);
-
-	im->mapping.base = base;
-	im->mapping.length = length;
-	im->payload = *payload;
-	image_size += length - im->size;
+	error = image_check_limits(im, shared ? size - im->size : size, 0);
+	im->data = image_data_alloc(payload, base, length);
+	if (shared)
+		image_size -= im->size;
 	return (error);
+}
+
+struct image_data *
+image_get_data(struct image *im)
+{
+	return (im->data);
+}
+
+struct image_data *
+image_data_create(struct image *keep, struct image_payload *payload,
+    void *base, size_t length)
+{
+	size_t size = length != 0 ? length : payload->size;
+
+	if (image_check_limits(keep, size, 0) != 0)
+		return (NULL);
+	return (image_data_alloc(payload, base, length));
+}
+
+void
+image_data_ref(struct image_data *data)
+{
+	data->references++;
+}
+
+struct image_payload *
+image_data_payload(struct image_data *data)
+{
+	return (&data->payload);
+}
+
+void
+image_data_free(struct image_data *data)
+{
+	if (data == NULL || --data->references != 0)
+		return;
+	image_size -= data->length != 0 ? data->length : data->payload.size;
+	if (data->length != 0)
+		munmap(data->base, data->length);
+	else
+		free(data->payload.data);
+	free(data);
+}
+
+u_int
+image_get_generation(struct image *im)
+{
+	return (im->parent == NULL ? im->gen : im->parent->gen);
+}
+
+int
+image_edit(struct image *im, const u_char *pixels, u_int w, u_int h,
+    u_int x, u_int y, int overwrite, int gap)
+{
+	struct image *child;
+	u_char *copy, *dst;
+	const u_char *src;
+	u_int xx, yy, k, width, height;
+	size_t released = 0;
+	uint32_t a, b, alpha, value;
+	int shared = im->data != NULL && im->pixels == im->data->payload.data;
+	int error;
+
+	if (shared && im->data->length == 0 && im->data->references == 1) {
+		im->data->payload.data = NULL;
+		im->data->payload.size = 0;
+		shared = 0;
+	}
+	if (shared) {
+		if (im->data->references == 1)
+			released = im->data->length != 0 ? im->data->length : im->data->payload.size;
+		image_size -= released;
+		error = image_check_limits(im, im->size, 0);
+		image_size += released;
+		if (error != 0)
+			return (-1);
+		copy = xmalloc(im->size);
+		memcpy(copy, im->pixels, im->size);
+		im->pixels = copy;
+		TAILQ_FOREACH(child, &im->children, child_entry)
+			child->pixels = copy;
+		image_size += im->size;
+	}
+	image_data_free(im->data);
+	im->data = NULL;
+	im->edited = (struct image_payload) { im->pixels, im->size,
+	    32, im->geom.src_w, im->geom.src_h, 'o' };
+	width = x < im->geom.src_w ? im->geom.src_w - x : 0;
+	height = y < im->geom.src_h ? im->geom.src_h - y : 0;
+	if (width > w)
+		width = w;
+	if (height > h)
+		height = h;
+	for (yy = 0; width != 0 && yy < height; yy++) {
+		dst = im->pixels + (size_t)(y + yy) * im->stride + (size_t)x * 4;
+		src = pixels + (size_t)yy * w * 4;
+		for (xx = 0; xx < width; xx++, dst += 4, src += 4) {
+			if (overwrite || dst[3] == 0) {
+				memcpy(dst, src, 4);
+				continue;
+			}
+			a = src[3] * 257;
+			b = dst[3] * 257;
+			alpha = a + b * (65535 - a) / 65535;
+			for (k = 0; k < 3; k++) {
+				value = dst[k] * 257 * b / 65535;
+				value = (src[k] * 257 * a + value * (65535 - a)) / 65535;
+				dst[k] = (value * 65535 / alpha) >> 8;
+			}
+			dst[3] = alpha >> 8;
+		}
+	}
+	if (gap != 0)
+		im->root_gap = gap > 0 ? gap : 0;
+	im->gen++;
+	return (0);
 }
 
 /* Get the image geometry. */

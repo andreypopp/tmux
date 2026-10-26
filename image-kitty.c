@@ -169,7 +169,7 @@ image_shm_unref(struct image_shm *guard)
 }
 
 #define IMAGE_CAPTURE_BUDGET (8 * 1024 * 1024)
-#define IMAGE_CAPTURE_MORE (sizeof "more 4294967295:18446744073709551615\n" - 1)
+#define IMAGE_CAPTURE_MORE (sizeof "more 4294967295:4294967295:18446744073709551615\n" - 1)
 
 static struct kitty_image_map *kitty_image_map_find_image(struct kitty_state *,
     struct image *);
@@ -210,10 +210,10 @@ kitty_write_chunk(char *buf, const char *keys, const u_char *data, size_t size,
 }
 
 void
-image_transmit_chunk(struct image *im, const char *keys, size_t *offset,
+image_transmit_chunk(struct image_data *data, const char *keys, size_t *offset,
     char *buf, size_t *len)
 {
-	struct image_payload *payload = image_get_payload(im);
+	struct image_payload *payload = image_data_payload(data);
 
 	*offset = kitty_write_chunk(buf, keys, payload->data, payload->size,
 	    *offset, 0, len);
@@ -495,7 +495,7 @@ image_capture_transmit(struct image_capture *rects, u_int count,
 	struct image_capture	**images = NULL;
 	struct image		*parent;
 	struct image_payload	*payload;
-	u_int			 i, j, nimages = 0, start = 0, id;
+	u_int			 i, j, nimages = 0, start = 0, id, gen;
 	size_t			 offset = 0, next;
 	char			*keys, *format, *result = xstrdup(""), tail;
 	char			 canonical[64];
@@ -512,16 +512,20 @@ image_capture_transmit(struct image_capture *rects, u_int count,
 		images[nimages++] = &rects[i];
 	}
 	if (token != NULL) {
-		if (sscanf(token, "%u:%zu%c", &id, &offset, &tail) != 2)
+		if (sscanf(token, "%u:%u:%zu%c", &id, &gen, &offset, &tail) != 3)
 			goto changed;
-		xsnprintf(canonical, sizeof canonical, "%u:%zu", id, offset);
+		xsnprintf(canonical, sizeof canonical, "%u:%u:%zu", id, gen, offset);
 		if (strcmp(canonical, token) != 0 || offset % 3072 != 0)
 			goto changed;
 		for (start = 0; start < nimages; start++) {
 			if (image_get_id(image_get_parent(images[start]->rect.image)) == id)
 				break;
 		}
-		if (start == nimages || offset >= image_get_payload(image_get_parent(images[start]->rect.image))->size)
+		if (start == nimages)
+			goto changed;
+		parent = image_get_parent(images[start]->rect.image);
+		if (gen != image_get_generation(parent) ||
+		    offset >= image_get_payload(parent)->size)
 			goto changed;
 	}
 	for (i = start; i < nimages; i++) {
@@ -546,7 +550,8 @@ image_capture_transmit(struct image_capture *rects, u_int count,
 		if (next < payload->size) {
 			result = xrealloc(result, *len + IMAGE_CAPTURE_MORE + 1);
 			*len += snprintf(result + *len, IMAGE_CAPTURE_MORE + 1,
-			    "more %u:%zu\n", image_get_id(parent), next);
+			    "more %u:%u:%zu\n", image_get_id(parent),
+			    image_get_generation(parent), next);
 			break;
 		}
 		offset = 0;
@@ -974,6 +979,7 @@ kitty_send_reply(struct input_ctx *ictx, struct kitty_state *ks, const char *m)
 	char	i[96] = "";
 	char	I[96] = "";
 	char	p[96] = "";
+	char	r[96] = "";
 
 	if (ks->quiet >= 2)
 		return;
@@ -993,7 +999,9 @@ kitty_send_reply(struct input_ctx *ictx, struct kitty_state *ks, const char *m)
 	}
 	if (ks->placement_id != 0)
 		xsnprintf(p, sizeof p, ",p=%u", ks->placement_id);
-	input_reply(ictx, 0, "\033_G%s%s%s;%s\033\\", i, I, p, m);
+	if (ks->action == 'f' && ks->rows != 0)
+		xsnprintf(r, sizeof r, ",r=%u", ks->rows);
+	input_reply(ictx, 0, "\033_G%s%s%s%s;%s\033\\", i, I, p, r, m);
 }
 
 /* Create a Kitty placement with shared source pixels and stored geometry. */
@@ -1110,10 +1118,10 @@ kitty_read_shm(struct kitty_state *ks, struct window_pane *wp,
 	if (fd == -1)
 		return ("EBADF");
 	image_shm_cancel(name);
-	if (control_image_guards(wp, end, NULL) == 0)
+	if (control_image_guards(wp, end, NULL, 1) == 0)
 		shm_unlink(name);
 	else
-		control_image_guards(wp, end, image_shm_new(name));
+		control_image_guards(wp, end, image_shm_new(name), 1);
 	if (fstat(fd, &sb) != 0 || sb.st_size <= 0 ||
 	    (uint64_t)sb.st_size > SIZE_MAX || offset >= (uint64_t)sb.st_size)
 		goto bad;
@@ -1186,7 +1194,7 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 	const u_char		*found;
 	const char		*m;
 	u_char			*p = NULL;
-	size_t			 csize, psize, limit;
+	size_t			 csize, psize, limit, raw;
 	u_int			 sx, sy;
 	uint64_t		 cw, ch;
 	struct image		*src = NULL, *im = NULL;
@@ -1216,13 +1224,19 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 
 	if (ks->more) {
 		kitty_parse_control_data(&cks, buf, csize, &m);
-		if (cks.action == 'd') {
-			free(ks->data);
-			ks->data = NULL;
-			ks->size = 0;
-			ks->allocated = 0;
-			ks->more = 0;
+		if (cks.action != 'd') {
+			ks->more = cks.more;
+			if (cks.quiet != 0)
+				ks->quiet = cks.quiet;
+			if (m != NULL)
+				goto out;
+			goto parsed;
 		}
+		free(ks->data);
+		ks->data = NULL;
+		ks->size = 0;
+		ks->allocated = 0;
+		ks->more = 0;
 	}
 
 	if (!ks->more) {
@@ -1255,6 +1269,7 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 	error = kitty_parse_control_data(ks, buf, csize, &m);
 	if (error != 0)
 		goto out;
+parsed:
 	m = "EINVAL";
 	if (ks->image_id == 0 && ks->image_number == 0)
 		ks->placement_id = 0;
@@ -1266,12 +1281,13 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 	}
 	if ((ks->medium != 'd' && ks->medium != 's') ||
 	    (ks->medium == 's' && ks->action != 't' &&
-	    ks->action != 'T' && ks->action != 'q')) {
+	    ks->action != 'T' && ks->action != 'q' && ks->action != 'f')) {
 		m = "ENOTSUP";
 		goto out;
 	}
 	if (ks->action != 't' && ks->action != 'T' &&
-	    ks->action != 'q' && ks->action != 'p' && ks->action != 'd') {
+	    ks->action != 'q' && ks->action != 'p' && ks->action != 'd' &&
+	    ks->action != 'f') {
 		m = "ENOTSUP";
 		goto out;
 	}
@@ -1310,6 +1326,17 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 		goto place;
 	}
 
+	if (ks->action == 'f') {
+		if (ks->image_id == 0)
+			goto out;
+		map = kitty_image_map_find(ks, ks->image_id);
+		if (map == NULL || (src = image_find(map->image_id)) == NULL) {
+			m = "ENOENT";
+			goto out;
+		}
+		image_ref(src);
+	}
+
 	if (ks->compression != 'o' && ks->compression != 'z')
 		goto out;
 	if (ks->medium == 's') {
@@ -1324,9 +1351,12 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 	switch (ks->format) {
 	case 24:
 	case 32:
-		if (mapping != NULL)
+		raw = image_raw_size(ks->format, ks->width, ks->height, limit);
+		if (mapping != NULL || (ks->format == 32 && ks->compression == 'o' &&
+		    raw != 0 && raw == ks->size)) {
 			p = ks->data;
-		else
+			ks->data = NULL;
+		} else
 			p = image_raw_decode(ks->data, ks->size, limit,
 			    ks->format, ks->width, ks->height, ks->compression == 'z');
 		break;
@@ -1338,6 +1368,48 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 	}
 	if (p == NULL)
 		goto out;
+
+	if (ks->action == 'f') {
+		struct image_data *data = NULL;
+		struct image_geom *geometry = image_get_geometry(src);
+		int mapped_pixels = mapping != NULL;
+
+		if (ks->width > geometry->src_w || ks->height > geometry->src_h)
+			goto frame_done;
+		if (ks->rows != 1) {
+			m = "ENOTSUP";
+			goto frame_done;
+		}
+		if (ks->medium == 's' && control_image_guards(wp, end, NULL, 0) != 0) {
+			data = image_data_create(src, &payload, mapping, maplen);
+			if (data == NULL) {
+				m = "ENOSPC";
+				goto frame_done;
+			}
+			mapping = NULL;
+			ks->data = NULL;
+		}
+		error = image_edit(src, p, ks->width, ks->height,
+		    ks->source_x, ks->source_y, ks->x_offset == 1, ks->z);
+		if (error != 0) {
+			m = "ENOSPC";
+			goto frame_done;
+		}
+		wp->flags |= PANE_REDRAW;
+		m = "OK";
+		if (data != NULL) {
+			keys = kitty_state_keys(ks, &payload, 2);
+			control_write_image(wp, end, data, keys);
+			free(keys);
+		}
+frame_done:
+		if (data != NULL && p == payload.data)
+			p = NULL;
+		image_data_free(data);
+		if (!mapped_pixels)
+			free(p);
+		goto out;
+	}
 
 	cw = (w->xpixel == 0 ? 8 : w->xpixel);
 	ch = (w->ypixel == 0 ? 16 : w->ypixel);
@@ -1363,17 +1435,11 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 		goto out;
 	}
 
-	if (mapping != NULL) {
-		error = image_set_mapping(src, mapping, maplen, &payload);
-		mapping = NULL;
-		ks->data = NULL;
-	} else {
-		if (ks->size != 0)
-			ks->data = payload.data = xrealloc(ks->data, ks->size);
-		error = image_set_payload(src, &payload);
-		if (error == 0)
-			ks->data = NULL;
-	}
+	if (ks->data != NULL && ks->size != 0)
+		payload.data = xrealloc(ks->data, ks->size);
+	error = image_set_data(src, &payload, mapping, maplen);
+	mapping = NULL;
+	ks->data = NULL;
 	if (error != 0) {
 		m = "ENOSPC";
 		goto out;
@@ -1389,7 +1455,7 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 		map = kitty_image_map_set(ks, ctx, ks->image_id, src);
 	if (ks->medium == 's' && ks->action != 'q') {
 		keys = kitty_state_keys(ks, &payload, 2);
-		control_write_image(wp, end, src, keys);
+		control_write_image(wp, end, image_get_data(src), keys);
 		free(keys);
 	}
 

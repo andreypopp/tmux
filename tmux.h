@@ -4152,8 +4152,8 @@ void printflike(2, 3) control_notify_write(struct client *, const char *, ...);
 void	control_write_guard(struct client *, const char *, long, u_int, int);
 void	control_write_output(struct client *, struct window_pane *);
 #ifdef ENABLE_IMAGES
-u_int	control_image_guards(struct window_pane *, size_t, struct image_shm *);
-void	control_write_image(struct window_pane *, size_t, struct image *, const char *);
+u_int	control_image_guards(struct window_pane *, size_t, struct image_shm *, int);
+void	control_write_image(struct window_pane *, size_t, struct image_data *, const char *);
 #endif
 int	control_all_done(struct client *);
 void	control_add_sub(struct client *, const char *, enum monitor_type, int,

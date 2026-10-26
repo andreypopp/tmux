@@ -2987,6 +2987,9 @@ captures only the received image data for placements in the range, once per
 image, in order of first appearance.
 The data is written as Kitty transmit commands, in lines of up to 4096 base64
 bytes, with replies suppressed.
+After a frame edit, the root image is sent as raw RGBA with
+.Ql f=32,s=width,v=height
+instead of its received data.
 Each reply is limited to 8 MiB.
 If more data remains, the final line is
 .Ql more token .
@@ -2995,8 +2998,8 @@ Repeat the command with the same range and
 to continue.
 A continuation fails with
 .Ql image changed
-if its image was removed, replaced or moved out of the range, or the token is
-invalid.
+if its image was edited, removed, replaced or moved out of the range, or the
+token is invalid.
 .Fl a
 with either image flag reads the saved main screen.
 When image support is disabled,

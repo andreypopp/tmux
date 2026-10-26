@@ -115,11 +115,19 @@ struct image	*image_create_with_parent(enum image_type, struct image *,
 struct image	*image_find(u_int);
 struct image	*image_get_parent(struct image *);
 struct image_payload *image_get_payload(struct image *);
-int		 image_set_payload(struct image *, struct image_payload *);
-int		 image_set_mapping(struct image *, void *, size_t,
-		     struct image_payload *);
+int		 image_set_data(struct image *, struct image_payload *, void *, size_t);
+struct image_data;
+struct image_data *image_get_data(struct image *);
+struct image_data *image_data_create(struct image *, struct image_payload *,
+		     void *, size_t);
+void		 image_data_ref(struct image_data *);
+struct image_payload *image_data_payload(struct image_data *);
+void		 image_data_free(struct image_data *);
+u_int		 image_get_generation(struct image *);
+int		 image_edit(struct image *, const u_char *, u_int, u_int,
+		     u_int, u_int, int, int);
 #define IMAGE_CHUNK_MAX (512 + 4096 + 3)
-void		 image_transmit_chunk(struct image *, const char *, size_t *,
+void		 image_transmit_chunk(struct image_data *, const char *, size_t *,
 		     char *, size_t *);
 struct image_shm;
 void		 image_shm_ref(struct image_shm *);

@@ -7,108 +7,27 @@ command -v python3 >/dev/null || exit 101
 python3 -B - "$TEST_TMUX" <<'PY'
 import _posixshmem as shm
 import base64
-import mmap
 import os
 import re
-import select
 import signal
 import subprocess
 import sys
 import time
 import zlib
-from image_test import image_test, kitty, png
+from image_test import image_test, kitty, png, Control, SharedMemory
+from image_test import shm_exists as exists, shm_contents as contents
 
-serial = 0
-names = []
-def create(data, name=None):
-    global serial
-    serial += 1
-    if name is None:
-        name = '/kis%d-%d' % (os.getpid(), serial)
-    fd = shm.shm_open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-    os.ftruncate(fd, len(data))
-    with mmap.mmap(fd, len(data)) as view:
-        view[:] = data
-    os.close(fd)
-    names.append(name)
-    return name
-
-def exists(name):
-    try:
-        fd = shm.shm_open(name, os.O_RDONLY, 0)
-    except FileNotFoundError:
-        return False
-    os.close(fd)
-    return True
-
-def contents(name, size=64):
-    fd = shm.shm_open(name, os.O_RDONLY, 0)
-    try:
-        with mmap.mmap(fd, os.fstat(fd).st_size, access=mmap.ACCESS_READ) as view:
-            return view[:size]
-    finally:
-        os.close(fd)
-
-def unescape(data):
-    return re.sub(rb'\\([0-7]{3})', lambda m: bytes([int(m[1], 8)]), data)
-
-class Control:
-    def __init__(self, flags):
-        self.process = subprocess.Popen(test.server + ['-C', 'attach-session',
-            '-t', 'image', '-f', flags], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        os.set_blocking(self.process.stdout.fileno(), False)
-        self.buffer = b''
-        self.output = b''
-        self.exchange(None)
-    def exchange(self, command):
-        if command is not None:
-            self.process.stdin.write(command.encode() + b'\n')
-            self.process.stdin.flush()
-        reply = []
-        begun = False
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            if b'\n' not in self.buffer:
-                if not select.select([self.process.stdout], [], [], 0.1)[0]:
-                    continue
-                data = os.read(self.process.stdout.fileno(), 65536)
-                assert data, 'control EOF'
-                self.buffer += data
-                continue
-            line, self.buffer = self.buffer.split(b'\n', 1)
-            if line.startswith(b'%output '):
-                self.output += unescape(line.split(b' ', 2)[2])
-            elif line.startswith(b'%begin '):
-                begun = True
-            elif begun and line.startswith((b'%end ', b'%error ')):
-                assert line.startswith(b'%end '), reply
-                return b'\n'.join(reply) + (b'\n' if reply else b'')
-            elif begun:
-                reply.append(line)
-        raise AssertionError('control timeout')
-    def sync(self):
-        self.exchange('display-message -p barrier')
-        result, self.output = self.output, b''
-        return result
-    def close(self):
-        self.process.stdin.close()
-        deadline = time.monotonic() + 10
-        while self.process.poll() is None and time.monotonic() < deadline:
-            if select.select([self.process.stdout], [], [], 0.05)[0]:
-                try:
-                    os.read(self.process.stdout.fileno(), 65536)
-                except BlockingIOError:
-                    pass
-        assert self.process.wait(timeout=1) == 0
+objects = SharedMemory()
+create, names = objects.create, objects.names
 
 with image_test(sys.argv[1]) as test:
     controls = []
     try:
         pane = test.run('display-message', '-p', '#{pane_id}')
         # A no-output client keeps pane reads enabled while output clients are blocked.
-        monitor = Control('no-output,ignore-size')
+        monitor = Control(test, 'no-output,ignore-size')
         controls.append(monitor)
-        direct = Control('ignore-size')
+        direct = Control(test, 'ignore-size')
         controls.append(direct)
         data = b'\xff\0\0\xff' * 16
         name = create(data)
@@ -164,7 +83,7 @@ with image_test(sys.argv[1]) as test:
             test.emit(kitty('a=d,d=I,i=%d' % identity))
             direct.sync()
         print('PASS shm APC boundary order')
-        local = Control('image-shm,ignore-size')
+        local = Control(test, 'image-shm,ignore-size')
         controls.append(local)
         name = create(data)
         test.emit(kitty('a=T,i=42,f=32,s=4,v=4,t=s,q=2,C=1', name.encode()))
@@ -271,9 +190,5 @@ with image_test(sys.argv[1]) as test:
     finally:
         for control in controls:
             control.close()
-        for name in names:
-            try:
-                shm.shm_unlink(name)
-            except FileNotFoundError:
-                pass
+        objects.close()
 PY

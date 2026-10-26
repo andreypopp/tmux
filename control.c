@@ -48,7 +48,7 @@ struct control_block {
 	size_t				 size, end;
 	char				*line;
 #ifdef ENABLE_IMAGES
-	struct image			*image;
+	struct image_data		*image;
 	char				*keys, *chunk;
 	size_t				 offset, chunk_offset;
 	struct image_shm		**guards;
@@ -191,7 +191,7 @@ control_free_block(struct control_state *cs, struct control_block *cb)
 		image_shm_unref(cb->guards[i]);
 	free(cb->guards);
 	if (cb->image != NULL)
-		image_free(cb->image);
+		image_data_free(cb->image);
 	free(cb->keys);
 	free(cb->chunk);
 #endif
@@ -749,7 +749,8 @@ control_image_boundary(struct client *c, struct window_pane *wp, size_t end,
 }
 
 u_int
-control_image_guards(struct window_pane *wp, size_t end, struct image_shm *guard)
+control_image_guards(struct window_pane *wp, size_t end, struct image_shm *guard,
+    int local)
 {
 	struct client *c;
 	struct control_pane *cp;
@@ -757,7 +758,7 @@ control_image_guards(struct window_pane *wp, size_t end, struct image_shm *guard
 	u_int count = 0;
 
 	TAILQ_FOREACH(c, &clients, entry) {
-		if (~c->flags & CLIENT_CONTROL_IMAGESHM ||
+		if (!!(c->flags & CLIENT_CONTROL_IMAGESHM) != local ||
 		    (cb = control_image_boundary(c, wp, end, &cp)) == NULL)
 			continue;
 		count++;
@@ -772,7 +773,7 @@ control_image_guards(struct window_pane *wp, size_t end, struct image_shm *guard
 }
 
 void
-control_write_image(struct window_pane *wp, size_t end, struct image *image,
+control_write_image(struct window_pane *wp, size_t end, struct image_data *image,
     const char *keys)
 {
 	struct client *c;
@@ -786,7 +787,7 @@ control_write_image(struct window_pane *wp, size_t end, struct image *image,
 		cb = control_queue_block(c, cp, raw);
 		cb->size = 1;
 		cb->image = image;
-		image_ref(image);
+		image_data_ref(image);
 		cb->keys = xstrdup(keys);
 		cb->chunk = xmalloc(IMAGE_CHUNK_MAX);
 	}
@@ -1083,7 +1084,7 @@ control_write_pending(struct client *c, struct control_pane *cp, size_t limit)
 		cb->size -= size;
 #ifdef ENABLE_IMAGES
 		if (cb->image != NULL && cb->size == 0 &&
-		    cb->offset < image_get_payload(cb->image)->size) {
+		    cb->offset < image_data_payload(cb->image)->size) {
 			cb->chunk_offset = 0;
 			cb->size = 1;
 			continue;

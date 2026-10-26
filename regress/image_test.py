@@ -1,11 +1,13 @@
 """Helpers for image tests using an attached client on a PTY."""
 
+import _posixshmem as shm
 import base64
 import contextlib
 import colorsys
 import errno
 import fcntl
 import itertools
+import mmap
 import os
 import re
 import select
@@ -14,8 +16,109 @@ import struct
 import subprocess
 import sys
 import termios
+import tempfile
 import time
 import zlib
+
+
+class SharedMemory:
+    def __init__(self):
+        self.names = []
+
+    def create(self, data, name=None):
+        if name is None:
+            name = '/kis%d-%d' % (os.getpid(), len(self.names))
+        fd = shm.shm_open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        try:
+            os.ftruncate(fd, len(data))
+            with mmap.mmap(fd, len(data)) as view:
+                view[:] = data
+        finally:
+            os.close(fd)
+        self.names.append(name)
+        return name
+
+    def close(self):
+        for name in self.names:
+            try:
+                shm.shm_unlink(name)
+            except FileNotFoundError:
+                pass
+
+
+def shm_exists(name):
+    try:
+        fd = shm.shm_open(name, os.O_RDONLY, 0)
+    except FileNotFoundError:
+        return False
+    os.close(fd)
+    return True
+
+
+def shm_contents(name, size=64):
+    fd = shm.shm_open(name, os.O_RDONLY, 0)
+    try:
+        with mmap.mmap(fd, os.fstat(fd).st_size, access=mmap.ACCESS_READ) as view:
+            return view[:size]
+    finally:
+        os.close(fd)
+
+
+def unescape(data):
+    return re.sub(rb'\\([0-7]{3})', lambda m: bytes([int(m[1], 8)]), data)
+
+
+class Control:
+    def __init__(self, test, flags):
+        self.process = subprocess.Popen(test.server + ['-C', 'attach-session',
+            '-t', 'image', '-f', flags], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        os.set_blocking(self.process.stdout.fileno(), False)
+        self.buffer = b''
+        self.output = b''
+        self.exchange(None)
+
+    def exchange(self, command):
+        if command is not None:
+            self.process.stdin.write(command.encode() + b'\n')
+            self.process.stdin.flush()
+        reply = []
+        begun = False
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if b'\n' not in self.buffer:
+                if not select.select([self.process.stdout], [], [], 0.1)[0]:
+                    continue
+                data = os.read(self.process.stdout.fileno(), 65536)
+                assert data, 'control EOF'
+                self.buffer += data
+                continue
+            line, self.buffer = self.buffer.split(b'\n', 1)
+            if line.startswith(b'%output '):
+                self.output += unescape(line.split(b' ', 2)[2])
+            elif line.startswith(b'%begin '):
+                begun = True
+            elif begun and line.startswith((b'%end ', b'%error ')):
+                assert line.startswith(b'%end '), reply
+                return b'\n'.join(reply) + (b'\n' if reply else b'')
+            elif begun:
+                reply.append(line)
+        raise AssertionError('control timeout')
+
+    def sync(self):
+        self.exchange('display-message -p barrier')
+        result, self.output = self.output, b''
+        return result
+
+    def close(self):
+        self.process.stdin.close()
+        deadline = time.monotonic() + 10
+        while self.process.poll() is None and time.monotonic() < deadline:
+            if select.select([self.process.stdout], [], [], 0.05)[0]:
+                try:
+                    os.read(self.process.stdout.fileno(), 65536)
+                except BlockingIOError:
+                    pass
+        assert self.process.wait(timeout=1) == 0
 
 
 class Client:
@@ -61,12 +164,9 @@ class Client:
 class ImageTest:
     """A server with one pane which copies input directly to its output."""
 
-    serial = itertools.count()
-
     def __init__(self, tmux, sx=40, sy=16):
-        # Short, unique socket labels also fit macOS's socket path limit.
-        self.server = [tmux, "-Lis%d-%d" % (os.getpid(), next(self.serial)),
-            "-f/dev/null"]
+        self.directory = tempfile.TemporaryDirectory(prefix='is-', dir='/tmp')
+        self.server = [tmux, '-S', self.directory.name + '/socket', '-f/dev/null']
         self.sx = sx
         self.sy = sy
         self.clients = []
@@ -202,6 +302,7 @@ class ImageTest:
             if os.waitpid(client.pid, os.WNOHANG) == (0, 0):
                 os.kill(client.pid, signal.SIGTERM)
                 os.waitpid(client.pid, 0)
+        self.directory.cleanup()
 
 
 @contextlib.contextmanager

@@ -122,7 +122,7 @@ struct sixel_pending {
 
 /* Item in the cache. */
 struct sixel_item {
-	u_int			 id;
+	u_int			 id, gen;
 	struct sixel_image	*si;
 	size_t			 size;
 
@@ -189,6 +189,10 @@ sixel_cache_cmp(struct sixel_item *a, struct sixel_item *b)
 	if (a->id < b->id)
 		return (-1);
 	if (a->id > b->id)
+		return (1);
+	if (a->gen < b->gen)
+		return (-1);
+	if (a->gen > b->gen)
 		return (1);
 	if (a->cw < b->cw)
 		return (-1);
@@ -1303,9 +1307,11 @@ static void
 sixel_collect_images(void)
 {
 	struct sixel_item	*cache, *next;
+	struct image		*im;
 
 	TAILQ_FOREACH_SAFE(cache, &sixel_cache, entry, next) {
-		if (image_find(cache->id) == NULL)
+		im = image_find(cache->id);
+		if (im == NULL || image_get_generation(im) != cache->gen)
 			sixel_remove_cache(cache);
 	}
 }
@@ -1318,7 +1324,8 @@ sixel_get_image(struct image *im, u_int cw, u_int ch)
 	struct image_geom	*ig = image_get_geometry(im);
 	size_t			 size;
 	u_int			 id = image_get_id(im);
-	struct sixel_item	*cache, find = { .id = id, .cw = cw, .ch = ch };
+	struct sixel_item	*cache, find = { .id = id,
+	    .gen = image_get_generation(im), .cw = cw, .ch = ch };
 
 	cache = RB_FIND(sixel_tree, &sixel_tree, &find);
 	if (cache != NULL) {
@@ -1343,6 +1350,7 @@ sixel_get_image(struct image *im, u_int cw, u_int ch)
 
 	cache = xcalloc(1, sizeof *cache);
 	cache->id = id;
+	cache->gen = find.gen;
 	cache->cw = cw;
 	cache->ch = ch;
 	cache->size = size;
