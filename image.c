@@ -47,6 +47,7 @@ struct image {
 	size_t			 stride;
 	size_t			 size;
 	u_char			*pixels;
+	struct image_payload	 payload;
 
 	RB_ENTRY(image)		 entry;
 	TAILQ_ENTRY(image)	 all_entry;
@@ -164,13 +165,13 @@ image_find_oldest(struct image *keep, size_t size)
 
 /* Is there enough space for this image? */
 static int
-image_can_add(size_t size)
+image_can_add(size_t size, u_int add)
 {
 	u_int	count;
 	size_t	limit;
 
 	count = options_get_number(global_options, "image-total-count-limit");
-	if (image_count >= count)
+	if ((uint64_t)image_count + add > count)
 		return (0);
 	limit = options_get_number(global_options, "image-total-size-limit");
 	if (image_size > limit || size > limit - image_size)
@@ -180,7 +181,7 @@ image_can_add(size_t size)
 
 /* Check limits and remove images if needed. */
 static int
-image_check_limits(struct image *keep, size_t size)
+image_check_limits(struct image *keep, size_t size, u_int add)
 {
 	struct image	*oldest;
 	struct client	*c;
@@ -189,12 +190,12 @@ image_check_limits(struct image *keep, size_t size)
 	limit = options_get_number(global_options, "image-total-size-limit");
 	if (size > limit)
 		return (-1);
-	if (image_can_add(size))
+	if (image_can_add(size, add))
 		return (0);
 
 	TAILQ_FOREACH(c, &clients, entry)
 		image_tty_free(&c->tty, 1);
-	while (!image_can_add(size)) {
+	while (!image_can_add(size, add)) {
 		oldest = image_find_oldest(keep, size);
 		if (oldest == NULL)
 			break;
@@ -202,7 +203,7 @@ image_check_limits(struct image *keep, size_t size)
 	}
 	TAILQ_FOREACH(c, &clients, entry)
 		server_redraw_client(c);
-	if (!image_can_add(size))
+	if (!image_can_add(size, add))
 		return (-1);
 	return (0);
 }
@@ -271,7 +272,7 @@ image_create_with_parent(enum image_type type, struct image *parent,
 
 	if (parent == NULL)
 		size = (ig->src_h - 1) * stride + ig->src_w * 4;
-	if (image_check_limits(parent, size) != 0)
+	if (image_check_limits(parent, size, 1) != 0)
 		return (NULL);
 
 	im = image_alloc(type, ig, stride, pixels);
@@ -308,7 +309,8 @@ image_free(struct image *im)
 		TAILQ_REMOVE(&all_images, im, all_entry);
 		image_count--;
 		if (im->parent == NULL) {
-			image_size -= im->size;
+			image_size -= im->size + im->payload.size;
+			free(im->payload.data);
 			free(im->pixels);
 		} else {
 			TAILQ_REMOVE(&im->parent->children, im, child_entry);
@@ -316,6 +318,28 @@ image_free(struct image *im)
 		}
 		free(im);
 	}
+}
+
+struct image *
+image_get_parent(struct image *im)
+{
+	return (im->parent);
+}
+
+struct image_payload *
+image_get_payload(struct image *im)
+{
+	return (&im->payload);
+}
+
+int
+image_set_payload(struct image *im, struct image_payload *payload)
+{
+	if (image_check_limits(im, payload->size, 0) != 0)
+		return (-1);
+	im->payload = *payload;
+	image_size += payload->size;
+	return (0);
 }
 
 /* Get the image geometry. */

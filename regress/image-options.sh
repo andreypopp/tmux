@@ -79,7 +79,7 @@ with image_test(sys.argv[1]) as test:
 
 # Sources share their pixels with placements but count as separate images.
 for option, limit in [('image-total-count-limit', 4),
-                      ('image-total-size-limit', 8)]:
+                      ('image-total-size-limit', 16)]:
     with image_test(sys.argv[1]) as test:
         client = test.attach()
         test.run('set-option', '-s', option, str(limit))

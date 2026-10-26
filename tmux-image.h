@@ -100,11 +100,21 @@ struct image_rect {
 	u_int		 dst_y;
 };
 
+struct image_payload {
+	u_char	*data;
+	size_t	 size;
+	u_int	 format, width, height;
+	char	 compression;
+};
+
 /* image.c */
 struct image	*image_create(enum image_type, struct image_geom *, u_char *);
 struct image	*image_create_with_parent(enum image_type, struct image *,
 		     struct image_geom *, size_t, u_char *);
 struct image	*image_find(u_int);
+struct image	*image_get_parent(struct image *);
+struct image_payload *image_get_payload(struct image *);
+int		 image_set_payload(struct image *, struct image_payload *);
 u_int		 image_get_id(struct image *);
 u_int		 image_get_order_id(struct image *);
 void		 image_set_order_id(struct image *, u_int);

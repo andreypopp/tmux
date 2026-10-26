@@ -597,6 +597,7 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 	struct kitty_state	*ks = *state;
 	struct kitty_state	 cks = { .action = 't' };
 	struct image_geom	 ig = { 0 };
+	struct image_payload	 payload;
 	struct kitty_image_map	*map = NULL;
 	const u_char		*found;
 	const char		*m;
@@ -721,6 +722,8 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 	if (ks->compression != 'o' && ks->compression != 'z')
 		goto out;
 	limit = options_get_number(global_options, "image-size-limit");
+	payload = (struct image_payload) { ks->data, ks->size,
+	    ks->format, ks->width, ks->height, ks->compression };
 	switch (ks->format) {
 	case 24:
 	case 32:
@@ -756,6 +759,13 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 		free(p);
 		goto out;
 	}
+
+	if (ks->size != 0)
+		ks->data = payload.data = xrealloc(ks->data, ks->size);
+	if (image_set_payload(src, &payload) != 0)
+		goto out;
+	ks->data = NULL;
+	ks->size = ks->allocated = 0;
 
 	if (ks->action == 'T') {
 		im = kitty_place_image(src, ks, w->xpixel, w->ypixel);
