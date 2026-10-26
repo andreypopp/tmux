@@ -74,11 +74,14 @@ image_base64_decode(const char *data, size_t size, size_t limit, size_t *osize)
 #ifdef HAVE_LIBZ
 static u_char *
 image_zlib_decode(const u_char *data, size_t size, size_t expected,
-    size_t limit)
+    size_t limit, size_t *osize)
 {
 	u_char	*r;
 	uLongf	 rsize;
+	int	 exact = expected != SIZE_MAX;
 
+	if (!exact)
+		expected = limit;
 	if (expected == 0 ||
 	    expected > limit ||
 	    size > limit ||
@@ -88,16 +91,19 @@ image_zlib_decode(const u_char *data, size_t size, size_t expected,
 	rsize = expected;
 
 	r = xmalloc(expected);
-	if (uncompress(r, &rsize, data, size) != Z_OK || rsize != expected) {
+	if (uncompress(r, &rsize, data, size) != Z_OK ||
+	    (exact && rsize != expected)) {
 		free(r);
 		return (NULL);
 	}
+	if (osize != NULL)
+		*osize = rsize;
 	return (r);
 }
 #else
 static u_char *
 image_zlib_decode(__unused const u_char *data, __unused size_t size,
-    __unused size_t expected, __unused size_t limit)
+    __unused size_t expected, __unused size_t limit, __unused size_t *osize)
 {
 	return (NULL);
 }
@@ -115,11 +121,10 @@ image_png_decode(const u_char *data, size_t size, size_t limit, int z,
 	if (size == 0 || size > limit)
 		return (NULL);
 	if (z) {
-		r = image_zlib_decode(data, size, expected, limit);
+		r = image_zlib_decode(data, size, expected, limit, &size);
 		if (r == NULL)
 			return (NULL);
 		data = r;
-		size = expected;
 	}
 
 	memset(&pi, 0, sizeof pi);
@@ -158,6 +163,15 @@ image_png_decode(__unused const u_char *data, __unused size_t size,
 }
 #endif
 
+size_t
+image_raw_size(u_int format, u_int width, u_int height, size_t limit)
+{
+	if ((format != 24 && format != 32) || width == 0 || height == 0 ||
+	    (uint64_t)width * height > limit / 4)
+		return (0);
+	return ((size_t)width * height * (format / 8));
+}
+
 /* Decode raw RGB or RGBA data. */
 u_char *
 image_raw_decode(const u_char *data, size_t size, size_t limit, u_int format,
@@ -167,19 +181,13 @@ image_raw_decode(const u_char *data, size_t size, size_t limit, u_int format,
 	size_t	 expected, i, j;
 	u_int	 bytes;
 
-	if (format != 24 && format != 32)
+	expected = image_raw_size(format, width, height, limit);
+	if (expected == 0 || size > limit)
 		return (NULL);
-
-	if (width == 0 ||
-	    height == 0 ||
-	    size > limit ||
-	    (uint64_t)width * height > limit / 4)
-		return (NULL);
-	bytes = (format == 24 ? 3 : 4);
-	expected = (size_t)width * height * bytes;
+	bytes = format / 8;
 
 	if (z) {
-		r = image_zlib_decode(data, size, expected, limit);
+		r = image_zlib_decode(data, size, expected, limit, NULL);
 		if (r == NULL)
 			return (NULL);
 		data = r;

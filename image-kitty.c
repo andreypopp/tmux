@@ -16,6 +16,12 @@
  */
 
 #include <sys/types.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <limits.h>
 #include <math.h>
@@ -47,6 +53,7 @@ struct kitty_state {
 	u_int				 placement_id;
 	u_int				 quiet;
 	u_int				 data_size;
+	u_int				 data_offset;
 	int				 z;
 	int				 no_cursor;
 	int				 more;
@@ -80,6 +87,87 @@ struct kitty_image_map {
 	TAILQ_ENTRY(kitty_image_map)		 entry;
 };
 
+struct image_shm {
+	char name[32];
+	struct event timer;
+	u_int references;
+	TAILQ_ENTRY(image_shm) entry;
+};
+static TAILQ_HEAD(, image_shm) image_shms = TAILQ_HEAD_INITIALIZER(image_shms);
+
+static void
+image_shm_cleanup(void)
+{
+	struct image_shm *guard;
+
+	TAILQ_FOREACH(guard, &image_shms, entry)
+		shm_unlink(guard->name);
+}
+
+static void
+image_shm_expire(__unused int fd, __unused short events, void *arg)
+{
+	struct image_shm *guard = arg;
+
+	shm_unlink(guard->name);
+	TAILQ_REMOVE(&image_shms, guard, entry);
+	free(guard);
+}
+
+static void
+image_shm_cancel(const char *name)
+{
+	struct image_shm *guard;
+
+	TAILQ_FOREACH(guard, &image_shms, entry) {
+		if (strcmp(guard->name, name) != 0)
+			continue;
+		evtimer_del(&guard->timer);
+		TAILQ_REMOVE(&image_shms, guard, entry);
+		guard->name[0] = '\0';
+		if (guard->references == 0)
+			free(guard);
+		break;
+	}
+}
+
+static struct image_shm *
+image_shm_new(const char *name)
+{
+	static int registered;
+	struct image_shm *guard;
+
+	image_shm_cancel(name);
+	if (!registered) {
+		atexit(image_shm_cleanup);
+		registered = 1;
+	}
+	guard = xcalloc(1, sizeof *guard);
+	strlcpy(guard->name, name, sizeof guard->name);
+	evtimer_set(&guard->timer, image_shm_expire, guard);
+	TAILQ_INSERT_TAIL(&image_shms, guard, entry);
+	return (guard);
+}
+
+void
+image_shm_ref(struct image_shm *guard)
+{
+	guard->references++;
+}
+
+void
+image_shm_unref(struct image_shm *guard)
+{
+	struct timeval tv = { 1, 0 };
+
+	if (--guard->references != 0)
+		return;
+	if (guard->name[0] == '\0')
+		free(guard);
+	else
+		evtimer_add(&guard->timer, &tv);
+}
+
 #define IMAGE_CAPTURE_BUDGET (8 * 1024 * 1024)
 #define IMAGE_CAPTURE_MORE (sizeof "more 4294967295:18446744073709551615\n" - 1)
 
@@ -103,32 +191,72 @@ kitty_capture_keys(struct image_payload *payload)
 }
 
 static size_t
+kitty_write_chunk(char *buf, const char *keys, const u_char *data, size_t size,
+    size_t offset, int more, size_t *len)
+{
+	size_t n = size - offset, header, encoded;
+
+	if (n > 3072)
+		n = 3072;
+	header = snprintf(buf, 512, "\033_G%sm=%d%s;",
+	    offset == 0 ? keys : "", offset + n < size || more,
+	    offset == 0 ? "" : ",q=2");
+	encoded = 4 * ((n + 2) / 3);
+	b64_ntop(data == NULL ? (const u_char *)"" : data + offset, n,
+	    buf + header, encoded + 1);
+	memcpy(buf + header + encoded, "\033\\", 3);
+	*len = header + encoded + 2;
+	return (offset + n);
+}
+
+void
+image_transmit_chunk(struct image *im, const char *keys, size_t *offset,
+    char *buf, size_t *len)
+{
+	struct image_payload *payload = image_get_payload(im);
+
+	*offset = kitty_write_chunk(buf, keys, payload->data, payload->size,
+	    *offset, 0, len);
+}
+
+static size_t
 kitty_capture_data(char **buf, size_t *len, const char *keys,
     const u_char *data, size_t size, size_t offset, int more)
 {
-	char	 header[512];
-	size_t	 n, headerlen, encoded, length;
+	char chunk[IMAGE_CHUNK_MAX];
+	size_t next, length;
 
-	if (data == NULL)
-		data = (const u_char *)"";
 	do {
-		n = size - offset > 3072 ? 3072 : size - offset;
-		headerlen = snprintf(header, sizeof header, "\033_G%sm=%d%s;",
-		    offset == 0 ? keys : "", offset + n < size || more,
-		    offset == 0 ? "" : ",q=2");
-		encoded = 4 * ((n + 2) / 3);
-		length = headerlen + encoded + 3;
-		if (*len + length + (more ? 0 : IMAGE_CAPTURE_MORE) > IMAGE_CAPTURE_BUDGET)
+		next = kitty_write_chunk(chunk, keys, data, size, offset, more,
+		    &length);
+		if (*len + length + 1 + (more ? 0 : IMAGE_CAPTURE_MORE) >
+		    IMAGE_CAPTURE_BUDGET)
 			break;
-		*buf = xrealloc(*buf, *len + length + 1);
-		memcpy(*buf + *len, header, headerlen);
-		b64_ntop(data + offset, n, *buf + *len + headerlen, encoded + 1);
-		memcpy(*buf + *len + headerlen + encoded, "\033\\\n", 3);
-		*len += length;
+		*buf = xrealloc(*buf, *len + length + 2);
+		memcpy(*buf + *len, chunk, length);
+		(*buf)[*len + length] = '\n';
+		*len += length + 1;
 		(*buf)[*len] = '\0';
-		offset += n;
+		offset = next;
 	} while (offset < size);
 	return (offset);
+}
+
+static char *
+kitty_state_keys(struct kitty_state *ks, struct image_payload *payload,
+    u_int quiet)
+{
+	char *format = kitty_capture_keys(payload), *keys;
+
+	xasprintf(&keys, "a=%c,%si=%u,I=%u,p=%u,%s"
+	    "x=%u,y=%u,w=%u,h=%u,X=%u,Y=%u,c=%u,r=%u,C=%d,q=%u,S=%u,z=%d,",
+	    ks->action, ks->medium == 's' ? "t=d," : "",
+	    ks->image_id, ks->image_number, ks->placement_id,
+	    format, ks->source_x, ks->source_y, ks->source_width,
+	    ks->source_height, ks->x_offset, ks->y_offset, ks->columns,
+	    ks->rows, ks->no_cursor, quiet, ks->data_size, ks->z);
+	free(format);
+	return (keys);
 }
 
 char *
@@ -136,21 +264,14 @@ image_capture_pending(void *state)
 {
 	struct kitty_state	*ks = state;
 	struct image_payload	 payload;
-	char			*keys, *format, *result = xstrdup("");
+	char			*keys, *result = xstrdup("");
 	size_t			 len = 0, chunks, encoded, overhead;
 
 	if (ks == NULL || !ks->more)
 		return (result);
 	payload = (struct image_payload) { ks->data, ks->size,
 	    ks->format, ks->width, ks->height, ks->compression };
-	format = kitty_capture_keys(&payload);
-	xasprintf(&keys, "a=%c,i=%u,I=%u,p=%u,%s"
-	    "x=%u,y=%u,w=%u,h=%u,X=%u,Y=%u,c=%u,r=%u,C=%d,q=%u,S=%u,z=%d,",
-	    ks->action, ks->image_id, ks->image_number, ks->placement_id,
-	    format, ks->source_x, ks->source_y, ks->source_width,
-	    ks->source_height, ks->x_offset, ks->y_offset, ks->columns,
-	    ks->rows, ks->no_cursor, ks->quiet, ks->data_size, ks->z);
-	free(format);
+	keys = kitty_state_keys(ks, &payload, ks->quiet);
 	chunks = ks->size == 0 ? 1 : (ks->size + 3071) / 3072;
 	encoded = 4 * ((ks->size + 2) / 3);
 	overhead = strlen(keys) + sizeof "\033_Gm=1;\033\\\n" - 1 +
@@ -313,9 +434,63 @@ image_capture_line(void *state, struct grid *gd, struct screen *s, u_int y,
 	return (result);
 }
 
+static int
+kitty_capture_shm(char **result, size_t *len, const char *keys,
+    struct image_payload *payload)
+{
+	static u_int	 counter;
+	char		 name[32], encoded[45], *line;
+	void		*base;
+	size_t		 length;
+	int		 fd;
+
+	do {
+		xsnprintf(name, sizeof name, "/kt%ld-%u", (long)getpid(), ++counter);
+		b64_ntop((u_char *)name, strlen(name), encoded, sizeof encoded);
+		xasprintf(&line, "\033_G%st=s,S=%zu,q=2;%s\033\\\n",
+		    keys, payload->size, encoded);
+		length = strlen(line);
+		if (*len + length + IMAGE_CAPTURE_MORE > IMAGE_CAPTURE_BUDGET) {
+			free(line);
+			return (0);
+		}
+		fd = shm_open(name, O_CREAT|O_EXCL|O_RDWR, 0600);
+		if (fd == -1)
+			free(line);
+	} while (fd == -1 && errno == EEXIST);
+	if (fd == -1)
+		return (-1);
+	if (ftruncate(fd, payload->size) != 0) {
+		close(fd);
+		shm_unlink(name);
+		free(line);
+		return (-1);
+	}
+	base = mmap(NULL, payload->size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+	close(fd);
+	if (base == MAP_FAILED) {
+		shm_unlink(name);
+		free(line);
+		return (-1);
+	}
+	memcpy(base, payload->data, payload->size);
+	munmap(base, payload->size);
+	{
+		struct image_shm *guard = image_shm_new(name);
+		struct timeval tv = { 10, 0 };
+
+		evtimer_add(&guard->timer, &tv);
+	}
+	*result = xrealloc(*result, *len + length + 1);
+	memcpy(*result + *len, line, length + 1);
+	*len += length;
+	free(line);
+	return (1);
+}
+
 char *
 image_capture_transmit(struct image_capture *rects, u_int count,
-    const char *token, size_t *len)
+    const char *token, size_t *len, int shm)
 {
 	struct image_capture	**images = NULL;
 	struct image		*parent;
@@ -353,11 +528,20 @@ image_capture_transmit(struct image_capture *rects, u_int count,
 		parent = image_get_parent(images[i]->rect.image);
 		payload = image_get_payload(parent);
 		format = kitty_capture_keys(payload);
-		xasprintf(&keys, "a=t,i=%u,%sq=2,",
-		    images[i]->id, format);
+		xasprintf(&keys, "a=t,i=%u,%s%s",
+		    images[i]->id, format, shm ? "" : "q=2,");
 		free(format);
-		next = kitty_capture_data(&result, len, keys, payload->data,
-		    payload->size, offset, 0);
+		if (shm) {
+			int status = kitty_capture_shm(&result, len, keys, payload);
+
+			if (status == -1) {
+				free(keys);
+				goto changed;
+			}
+			next = status ? payload->size : 0;
+		} else
+			next = kitty_capture_data(&result, len, keys, payload->data,
+			    payload->size, offset, 0);
 		free(keys);
 		if (next < payload->size) {
 			result = xrealloc(result, *len + IMAGE_CAPTURE_MORE + 1);
@@ -458,6 +642,7 @@ kitty_parse_control_data(struct kitty_state *ks, const u_char *data,
 		case 'q':
 		case 'm':
 		case 'S':
+		case 'O':
 		case 'x':
 		case 'y':
 		case 'w':
@@ -499,6 +684,9 @@ kitty_parse_control_data(struct kitty_state *ks, const u_char *data,
 				break;
 			case 'S':
 				ks->data_size = number;
+				break;
+			case 'O':
+				ks->data_offset = number;
 				break;
 			case 'x':
 				ks->source_x = number;
@@ -895,11 +1083,99 @@ kitty_place_image(struct image *src, struct kitty_state *ks, u_int xpixel,
 	return (image_create_with_parent(type, src, &ig, stride, pixels));
 }
 
+static const char *
+kitty_read_shm(struct kitty_state *ks, struct window_pane *wp,
+    size_t end, void **mapping, size_t *maplen)
+{
+	char		 name[32];
+	struct stat	 sb;
+	size_t		 size, raw = 0, limit, offset = ks->data_offset;
+	int		 fd;
+#ifdef __APPLE__
+	void		*base;
+	size_t		 delta;
+#else
+	ssize_t		 n;
+	size_t		 done;
+#endif
+
+	if (ks->size == 0 || ks->size > 31 ||
+	    memchr(ks->data, '\0', ks->size) != NULL ||
+	    memchr(ks->data + (ks->data[0] == '/'), '/',
+	    ks->size - (ks->data[0] == '/')) != NULL)
+		return ("EINVAL");
+	memcpy(name, ks->data, ks->size);
+	name[ks->size] = '\0';
+	fd = shm_open(name, O_RDONLY, 0);
+	if (fd == -1)
+		return ("EBADF");
+	image_shm_cancel(name);
+	if (control_image_guards(wp, end, NULL) == 0)
+		shm_unlink(name);
+	else
+		control_image_guards(wp, end, image_shm_new(name));
+	if (fstat(fd, &sb) != 0 || sb.st_size <= 0 ||
+	    (uint64_t)sb.st_size > SIZE_MAX || offset >= (uint64_t)sb.st_size)
+		goto bad;
+	limit = options_get_number(global_options, "image-size-limit");
+	if (ks->format == 24 || ks->format == 32) {
+		raw = image_raw_size(ks->format, ks->width, ks->height, limit);
+		if (raw == 0)
+			goto bad;
+	}
+	size = sb.st_size - offset;
+	if (ks->data_size != 0)
+		size = ks->data_size;
+	else if (ks->compression != 'z' && raw != 0)
+		size = raw;
+	if (size == 0 || size > limit || size > (uint64_t)sb.st_size - offset)
+		goto bad;
+	if (ks->compression == 'o' && raw != 0 && size != raw)
+		goto bad;
+#ifdef __APPLE__
+	delta = offset % getpagesize();
+	base = mmap(NULL, size + delta, PROT_READ, MAP_SHARED, fd, offset - delta);
+	if (base == MAP_FAILED)
+		goto bad;
+	free(ks->data);
+	if (ks->format == 32 && ks->compression == 'o') {
+		*mapping = base;
+		*maplen = size + delta;
+		ks->data = (u_char *)base + delta;
+	} else {
+		ks->data = xmalloc(size);
+		memcpy(ks->data, (u_char *)base + delta, size);
+		munmap(base, size + delta);
+	}
+#else
+	*mapping = NULL;
+	*maplen = 0;
+	free(ks->data);
+	ks->data = xmalloc(size);
+	for (done = 0; done < size; done += n) {
+		n = pread(fd, ks->data + done, size - done, offset + done);
+		if (n == -1 && errno == EINTR) {
+			n = 0;
+			continue;
+		}
+		if (n <= 0)
+			goto bad;
+	}
+#endif
+	close(fd);
+	ks->size = size;
+	return ("OK");
+
+bad:
+	close(fd);
+	return ("EBADF");
+}
+
 /* Parse and reply to a Kitty graphics sequence. */
 void
 kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
     struct screen_write_ctx *ctx, u_int bg, void **state, const u_char *buf,
-    size_t len)
+    size_t len, size_t end)
 {
 	struct window		*w = wp->window;
 	struct kitty_state	*ks = *state;
@@ -915,6 +1191,9 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 	uint64_t		 cw, ch;
 	struct image		*src = NULL, *im = NULL;
 	int			 error;
+	void			*mapping = NULL;
+	size_t			 maplen = 0;
+	char			*keys;
 
 	buf++;
 	len--;
@@ -967,6 +1246,7 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 		ks->placement_id = 0;
 		ks->quiet = 0;
 		ks->data_size = 0;
+		ks->data_offset = 0;
 		ks->no_cursor = 0;
 		ks->z = 0;
 	}
@@ -984,7 +1264,9 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 		m = "ENOTSUP";
 		goto out;
 	}
-	if (ks->medium != 'd') {
+	if ((ks->medium != 'd' && ks->medium != 's') ||
+	    (ks->medium == 's' && ks->action != 't' &&
+	    ks->action != 'T' && ks->action != 'q')) {
 		m = "ENOTSUP";
 		goto out;
 	}
@@ -1030,19 +1312,28 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 
 	if (ks->compression != 'o' && ks->compression != 'z')
 		goto out;
+	if (ks->medium == 's') {
+		m = kitty_read_shm(ks, wp, end, &mapping, &maplen);
+		if (strcmp(m, "OK") != 0)
+			goto out;
+		m = "EINVAL";
+	}
 	limit = options_get_number(global_options, "image-size-limit");
 	payload = (struct image_payload) { ks->data, ks->size,
 	    ks->format, ks->width, ks->height, ks->compression };
 	switch (ks->format) {
 	case 24:
 	case 32:
-		p = image_raw_decode(ks->data, ks->size, limit,
-		    ks->format, ks->width, ks->height, ks->compression == 'z');
+		if (mapping != NULL)
+			p = ks->data;
+		else
+			p = image_raw_decode(ks->data, ks->size, limit,
+			    ks->format, ks->width, ks->height, ks->compression == 'z');
 		break;
 	case 100:
 		p = image_png_decode(ks->data, ks->size, limit,
-		    ks->compression == 'z', ks->data_size, &ks->width,
-		    &ks->height);
+		    ks->compression == 'z', ks->medium == 's' ? SIZE_MAX :
+		    ks->data_size, &ks->width, &ks->height);
 		break;
 	}
 	if (p == NULL)
@@ -1054,7 +1345,8 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 	cw *= sx;
 	ch *= sy;
 	if (cw > UINT_MAX || ch > UINT_MAX) {
-		free(p);
+		if (mapping == NULL)
+			free(p);
 		goto out;
 	}
 	ig.src_w = ig.scaled_width = ks->width;
@@ -1065,15 +1357,27 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 	ig.sy = sy;
 	src = image_create(IMAGE_TYPE_KITTY, &ig, p);
 	if (src == NULL) {
-		free(p);
+		m = errno == ENOSPC ? "ENOSPC" : "EINVAL";
+		if (mapping == NULL)
+			free(p);
 		goto out;
 	}
 
-	if (ks->size != 0)
-		ks->data = payload.data = xrealloc(ks->data, ks->size);
-	if (image_set_payload(src, &payload) != 0)
+	if (mapping != NULL) {
+		error = image_set_mapping(src, mapping, maplen, &payload);
+		mapping = NULL;
+		ks->data = NULL;
+	} else {
+		if (ks->size != 0)
+			ks->data = payload.data = xrealloc(ks->data, ks->size);
+		error = image_set_payload(src, &payload);
+		if (error == 0)
+			ks->data = NULL;
+	}
+	if (error != 0) {
+		m = "ENOSPC";
 		goto out;
-	ks->data = NULL;
+	}
 	ks->size = ks->allocated = 0;
 
 	if (ks->action == 'T') {
@@ -1083,6 +1387,11 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 	}
 	if (ks->action != 'q')
 		map = kitty_image_map_set(ks, ctx, ks->image_id, src);
+	if (ks->medium == 's' && ks->action != 'q') {
+		keys = kitty_state_keys(ks, &payload, 2);
+		control_write_image(wp, end, src, keys);
+		free(keys);
+	}
 
 place:
 	if (im != NULL) {
@@ -1099,7 +1408,10 @@ out:
 	if (src != NULL)
 		image_free(src);
 
-	free(ks->data);
+	if (mapping != NULL)
+		munmap(mapping, maplen);
+	else
+		free(ks->data);
 	ks->data = NULL;
 	ks->size = 0;
 	ks->allocated = 0;

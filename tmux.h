@@ -2359,6 +2359,7 @@ struct client {
 #define CLIENT_WRITE_ACK 0x4000000000ULL
 #define CLIENT_NO_DETACH_ON_DESTROY 0x8000000000ULL
 #define CLIENT_CONTROL_DISCARD 0x10000000000ULL
+#define CLIENT_CONTROL_IMAGESHM 0x100000000000ULL
 #define CLIENT_SIDESTATUSOFF 0x20000000000ULL
 #define CLIENT_SIDESTATUSFOCUS 0x40000000000ULL
 #define CLIENT_REDRAWSIDESTATUS 0x80000000000ULL
@@ -4150,6 +4151,10 @@ void printflike(2, 3) control_write(struct client *, const char *, ...);
 void printflike(2, 3) control_notify_write(struct client *, const char *, ...);
 void	control_write_guard(struct client *, const char *, long, u_int, int);
 void	control_write_output(struct client *, struct window_pane *);
+#ifdef ENABLE_IMAGES
+u_int	control_image_guards(struct window_pane *, size_t, struct image_shm *);
+void	control_write_image(struct window_pane *, size_t, struct image *, const char *);
+#endif
 int	control_all_done(struct client *);
 void	control_add_sub(struct client *, const char *, enum monitor_type, int,
 	    const char *);

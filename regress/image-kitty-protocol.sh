@@ -13,6 +13,8 @@ command -v python3 >/dev/null || exit 101
 
 python3 -B - <<'PY'
 import base64
+import _posixshmem as shm
+import mmap
 import json
 import os
 from pathlib import Path
@@ -25,6 +27,17 @@ import zlib
 
 tmux = [os.environ['TEST_TMUX'], '-u', '-Limage-protocol' + str(os.getpid()),
         '-f/dev/null']
+
+names = []
+def shared(data, name=None):
+    name = name or '/kip%d-%d' % (os.getpid(), len(names))
+    fd = shm.shm_open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    os.ftruncate(fd, len(data))
+    with mmap.mmap(fd, len(data)) as view:
+        view[:] = data
+    os.close(fd)
+    names.append(name)
+    return name.encode()
 
 # Run a command on the test server.
 def run(*args):
@@ -109,6 +122,21 @@ with tempfile.TemporaryDirectory(prefix='tmux-kitty-protocol-') as tmp:
         transmit = 'a=t,i=7,f=32,s=1,v=1'
         ok = graphics('i=7', 'OK')
         invalid = graphics('i=7', 'EINVAL')
+        shm_control = 'a=q,i=7,f=32,s=4,v=4,t=s'
+        rgba = b'\xff\0\0\xff' * 16
+        for label, name, extra, reply in [
+            ('ok', shared(rgba), '', 'OK'),
+            ('bare', shared(rgba, 'kip%d-bare' % os.getpid()), '', 'OK'),
+            ('long', b'/' + b'x' * 31, '', 'EINVAL'),
+            ('slash', b'/one/two', '', 'EINVAL'),
+            ('nul', b'/one\0two', '', 'EINVAL'),
+            ('missing', b'/kip-missing-object', '', 'EBADF'),
+            ('short', shared(rgba[:4]), ',s=128,v=128', 'EBADF'),
+            ('limit', shared(rgba), ',s=256,v=256', 'EBADF'),
+        ]:
+            check('shm-' + label, graphics(shm_control + extra,
+                base64.b64encode(name).decode()), graphics('i=7', reply))
+        print('PASS shm replies and size limits', flush=True)
         check('transmit', graphics(transmit, pixel), ok)
         check('defaults', graphics('i=7,s=1,v=1', pixel), ok)
         check('rgb', graphics('a=t,i=7,f=24,s=1,v=1', '/wAA'), ok)
@@ -186,7 +214,7 @@ with tempfile.TemporaryDirectory(prefix='tmux-kitty-protocol-') as tmp:
         for action in ['f', 'a', 'c']:
             check('unsupported-action-' + action,
                   graphics('a=%s,i=7' % action), graphics('i=7', 'ENOTSUP'))
-        for medium in ['f', 't', 's']:
+        for medium in ['f', 't']:
             check('unsupported-medium-' + medium,
                   graphics('a=t,i=7,t=' + medium), graphics('i=7', 'ENOTSUP'))
         check('unsupported-number', graphics('a=t,I=7,f=32,s=1,v=1', pixel),
@@ -431,6 +459,11 @@ with tempfile.TemporaryDirectory(prefix='tmux-kitty-protocol-') as tmp:
         check('decoder-controls-reset', graphics(sized + ',q=2', payload) +
               graphics('a=T,i=7,s=1,v=1', pixel), ok, cursor='6,2')
     finally:
+        for name in names:
+            try:
+                shm.shm_unlink(name)
+            except FileNotFoundError:
+                pass
         subprocess.run(tmux + ['kill-server'], stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL)
 PY

@@ -45,8 +45,15 @@
  * entire block in one go.
  */
 struct control_block {
-	size_t				 size;
+	size_t				 size, end;
 	char				*line;
+#ifdef ENABLE_IMAGES
+	struct image			*image;
+	char				*keys, *chunk;
+	size_t				 offset, chunk_offset;
+	struct image_shm		**guards;
+	u_int				 nguards;
+#endif
 	uint64_t			 t;
 
 	TAILQ_ENTRY(control_block)	 entry;
@@ -177,7 +184,17 @@ static void
 control_free_block(struct control_state *cs, struct control_block *cb)
 {
 	size_t	 size;
+#ifdef ENABLE_IMAGES
+	u_int	 i;
 
+	for (i = 0; i < cb->nguards; i++)
+		image_shm_unref(cb->guards[i]);
+	free(cb->guards);
+	if (cb->image != NULL)
+		image_free(cb->image);
+	free(cb->keys);
+	free(cb->chunk);
+#endif
 	if (cb->size == 0 && cb->line != NULL) {
 		size = strlen(cb->line) + 1;
 		if (cs->queued_reply_bytes > size)
@@ -672,11 +689,114 @@ control_check_age(struct client *c, struct window_pane *wp,
 	return (1);
 }
 
+static struct control_block *
+control_queue_block(struct client *c, struct control_pane *cp,
+    struct control_block *after)
+{
+	struct control_state *cs = c->control_state;
+	struct control_block *cb = xcalloc(1, sizeof *cb);
+
+	cb->t = get_timer();
+	if (after == NULL) {
+		TAILQ_INSERT_TAIL(&cs->all_blocks, cb, all_entry);
+		TAILQ_INSERT_TAIL(&cp->blocks, cb, entry);
+	} else {
+		TAILQ_INSERT_AFTER(&cs->all_blocks, after, cb, all_entry);
+		TAILQ_INSERT_AFTER(&cp->blocks, after, cb, entry);
+	}
+	if (!cp->pending_flag) {
+		TAILQ_INSERT_TAIL(&cs->pending_list, cp, pending_entry);
+		cp->pending_flag = 1;
+		cs->pending_count++;
+	}
+	bufferevent_enable(cs->write_event, EV_WRITE);
+	return (cb);
+}
+
+#ifdef ENABLE_IMAGES
+static struct control_block *
+control_image_boundary(struct client *c, struct window_pane *wp, size_t end,
+    struct control_pane **pane)
+{
+	struct control_pane *cp;
+	struct control_block *cb, *tail;
+	size_t size;
+
+	if (c->control_state == NULL ||
+	    (cp = control_get_pane(c, wp)) == NULL)
+		return (NULL);
+	TAILQ_FOREACH(cb, &cp->blocks, entry) {
+		if (cb->image != NULL || end <= cb->end - cb->size ||
+		    end > cb->end)
+			continue;
+		if (end < cb->end) {
+			size = cb->end - end;
+			tail = control_queue_block(c, cp, cb);
+			tail->end = cb->end;
+			tail->size = size;
+			tail->t = cb->t;
+			tail->guards = cb->guards;
+			tail->nguards = cb->nguards;
+			cb->guards = NULL;
+			cb->nguards = 0;
+			cb->size -= size;
+			cb->end = end;
+		}
+		*pane = cp;
+		return (cb);
+	}
+	return (NULL);
+}
+
+u_int
+control_image_guards(struct window_pane *wp, size_t end, struct image_shm *guard)
+{
+	struct client *c;
+	struct control_pane *cp;
+	struct control_block *cb;
+	u_int count = 0;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (~c->flags & CLIENT_CONTROL_IMAGESHM ||
+		    (cb = control_image_boundary(c, wp, end, &cp)) == NULL)
+			continue;
+		count++;
+		if (guard == NULL)
+			continue;
+		cb->guards = xreallocarray(cb->guards, cb->nguards + 1,
+		    sizeof *cb->guards);
+		cb->guards[cb->nguards++] = guard;
+		image_shm_ref(guard);
+	}
+	return (count);
+}
+
+void
+control_write_image(struct window_pane *wp, size_t end, struct image *image,
+    const char *keys)
+{
+	struct client *c;
+	struct control_pane *cp;
+	struct control_block *cb, *raw;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (c->flags & CLIENT_CONTROL_IMAGESHM ||
+		    (raw = control_image_boundary(c, wp, end, &cp)) == NULL)
+			continue;
+		cb = control_queue_block(c, cp, raw);
+		cb->size = 1;
+		cb->image = image;
+		image_ref(image);
+		cb->keys = xstrdup(keys);
+		cb->chunk = xmalloc(IMAGE_CHUNK_MAX);
+	}
+}
+#endif
+
 /* Write output from a pane. */
 void
 control_write_output(struct client *c, struct window_pane *wp)
 {
-	struct control_state	*cs = c->control_state;
 	struct control_pane	*cp;
 	struct control_block	*cb;
 	size_t			 new_size;
@@ -701,23 +821,9 @@ control_write_output(struct client *c, struct window_pane *wp)
 		return;
 	window_pane_update_used_data(wp, &cp->queued, new_size);
 
-	cb = xcalloc(1, sizeof *cb);
+	cb = control_queue_block(c, cp, NULL);
 	cb->size = new_size;
-	TAILQ_INSERT_TAIL(&cs->all_blocks, cb, all_entry);
-	cb->t = get_timer();
-
-	TAILQ_INSERT_TAIL(&cp->blocks, cb, entry);
-	log_debug("%s: %s: new output block of %zu for %%%u", __func__, c->name,
-	    cb->size, wp->id);
-
-	if (!cp->pending_flag) {
-		log_debug("%s: %s: %%%u now pending", __func__, c->name,
-		    wp->id);
-		TAILQ_INSERT_TAIL(&cs->pending_list, cp, pending_entry);
-		cp->pending_flag = 1;
-		cs->pending_count++;
-	}
-	bufferevent_enable(cs->write_event, EV_WRITE);
+	cb->end = cp->queued.used;
 	return;
 
 ignore:
@@ -862,11 +968,12 @@ control_flush_all_blocks(struct client *c)
 
 /* Append data to buffer. */
 static struct evbuffer *
-control_append_data(struct client *c, struct control_pane *cp, uint64_t age,
-    struct evbuffer *message, struct window_pane *wp, size_t size)
+control_append_data(struct client *c, uint64_t age,
+    struct evbuffer *message, struct window_pane *wp, size_t size,
+    const u_char *data)
 {
-	u_char	*new_data;
-	size_t	 new_size, start;
+	const u_char *new_data = data;
+	size_t	 start;
 	u_int	 i;
 
 	if (message == NULL) {
@@ -881,9 +988,6 @@ control_append_data(struct client *c, struct control_pane *cp, uint64_t age,
 			evbuffer_add_printf(message, "%%output %%%u ", wp->id);
 	}
 
-	new_data = window_pane_get_new_data(wp, &cp->offset, &new_size);
-	if (new_size < size)
-		fatalx("not enough data: %zu < %zu", new_size, size);
 	for (i = 0; i < size; i++) {
 		if (new_data[i] < ' ' || new_data[i] == '\\') {
 			evbuffer_add_printf(message, "\\%03o", new_data[i]);
@@ -896,7 +1000,6 @@ control_append_data(struct client *c, struct control_pane *cp, uint64_t age,
 			evbuffer_add(message, new_data + start, i - start + 1);
 		}
 	}
-	window_pane_update_used_data(wp, &cp->offset, size);
 	return (message);
 }
 
@@ -921,7 +1024,8 @@ control_write_pending(struct client *c, struct control_pane *cp, size_t limit)
 	struct control_state	*cs = c->control_state;
 	struct window_pane	*wp = NULL;
 	struct evbuffer		*message = NULL;
-	size_t			 used = 0, size;
+	size_t			 used = 0, size, available;
+	const u_char		*data;
 	struct control_block	*cb, *cb1;
 	uint64_t		 age, t = get_timer();
 
@@ -952,14 +1056,39 @@ control_write_pending(struct client *c, struct control_pane *cp, size_t limit)
 		    "(used %zu/%zu)", __func__, c->name, cb->size,
 		    (unsigned long long)age, cp->pane, used, limit);
 
+#ifdef ENABLE_IMAGES
+		if (cb->image != NULL && cb->size == 1 && cb->chunk_offset == 0)
+			image_transmit_chunk(cb->image, cb->keys, &cb->offset,
+			    cb->chunk, &cb->size);
+#endif
 		size = cb->size;
 		if (size > limit - used)
 			size = limit - used;
 		used += size;
 
-		message = control_append_data(c, cp, age, message, wp, size);
+#ifdef ENABLE_IMAGES
+		if (cb->image != NULL) {
+			data = (u_char *)cb->chunk + cb->chunk_offset;
+			cb->chunk_offset += size;
+		} else
+#endif
+		{
+			data = window_pane_get_new_data(wp, &cp->offset, &available);
+			if (available < size)
+				fatalx("not enough pane data");
+			window_pane_update_used_data(wp, &cp->offset, size);
+		}
+		message = control_append_data(c, age, message, wp, size, data);
 
 		cb->size -= size;
+#ifdef ENABLE_IMAGES
+		if (cb->image != NULL && cb->size == 0 &&
+		    cb->offset < image_get_payload(cb->image)->size) {
+			cb->chunk_offset = 0;
+			cb->size = 1;
+			continue;
+		}
+#endif
 		if (cb->size == 0) {
 			TAILQ_REMOVE(&cp->blocks, cb, entry);
 			control_free_block(cs, cb);

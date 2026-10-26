@@ -1123,6 +1123,10 @@ The flags are:
 .Bl -tag -width Ds
 .It Cm ignore\-size
 the client does not affect the size of other clients
+.It Cm image\-shm
+the control client can open local Kitty shared-memory image objects;
+.Ic capture\-pane Fl K
+also sends shared-memory objects instead of direct image data
 .It Cm new\-layouts
 use the new layout string format
 .It Cm no\-detach\-on\-destroy

@@ -3107,6 +3107,8 @@ server_client_control_flags(struct client *c, const char *next)
 	}
 	if (strcmp(next, "no-output") == 0)
 		return (CLIENT_CONTROL_NOOUTPUT);
+	if (strcmp(next, "image-shm") == 0)
+		return (CLIENT_CONTROL_IMAGESHM);
 	if (strcmp(next, "wait-exit") == 0)
 		return (CLIENT_CONTROL_WAITEXIT);
 	if (strcmp(next, "new-layouts") == 0)
@@ -3179,6 +3181,8 @@ server_client_get_flags(struct client *c)
 		strlcat(s, "no-detach-on-destroy,", sizeof s);
 	if (c->flags & CLIENT_CONTROL_NOOUTPUT)
 		strlcat(s, "no-output,", sizeof s);
+	if (c->flags & CLIENT_CONTROL_IMAGESHM)
+		strlcat(s, "image-shm,", sizeof s);
 	if (c->flags & CLIENT_CONTROL_WAITEXIT)
 		strlcat(s, "wait-exit,", sizeof s);
 	if (c->flags & CLIENT_CONTROL_NEWLAYOUTS)

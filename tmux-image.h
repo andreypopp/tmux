@@ -116,6 +116,14 @@ struct image	*image_find(u_int);
 struct image	*image_get_parent(struct image *);
 struct image_payload *image_get_payload(struct image *);
 int		 image_set_payload(struct image *, struct image_payload *);
+int		 image_set_mapping(struct image *, void *, size_t,
+		     struct image_payload *);
+#define IMAGE_CHUNK_MAX (512 + 4096 + 3)
+void		 image_transmit_chunk(struct image *, const char *, size_t *,
+		     char *, size_t *);
+struct image_shm;
+void		 image_shm_ref(struct image_shm *);
+void		 image_shm_unref(struct image_shm *);
 u_int		 image_get_id(struct image *);
 u_int		 image_get_order_id(struct image *);
 void		 image_set_order_id(struct image *, u_int);
@@ -137,6 +145,7 @@ void		 image_get_pixel_area(struct image *, u_int, u_int, u_int,
 u_char		*image_base64_decode(const char *, size_t, size_t, size_t *);
 u_char		*image_png_decode(const u_char *, size_t, size_t, int, size_t,
 		     u_int *, u_int *);
+size_t		 image_raw_size(u_int, u_int, u_int, size_t);
 u_char		*image_raw_decode(const u_char *, size_t, size_t, u_int, u_int,
 		     u_int, int);
 
@@ -212,7 +221,7 @@ void		 sixel_flush_pending(struct tty *);
 int		 kitty_select(struct tty *);
 void		 kitty_parse_input(struct input_ctx *, struct window_pane *,
 		     struct screen_write_ctx *, u_int, void **, const u_char *,
-		     size_t);
+		     size_t, size_t);
 void		 kitty_free_state(void *);
 void		 kitty_remove_image(struct image *);
 struct image_capture {
@@ -224,7 +233,7 @@ struct image_capture *image_capture_select(void *, struct grid *, u_int, u_int,
 char		*image_capture_line(void *, struct grid *, struct screen *,
 		     u_int, struct image_capture *, u_int, struct grid_cell **, int);
 char		*image_capture_transmit(struct image_capture *, u_int,
-		     const char *, size_t *);
+		     const char *, size_t *, int);
 char		*image_capture_pending(void *);
 void		*input_kitty_state(struct input_ctx *);
 

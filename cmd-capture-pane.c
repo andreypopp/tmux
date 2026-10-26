@@ -271,6 +271,7 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 	struct image_capture		*rects = NULL;
 	u_int				 nrects = 0;
 	int				 images = args_has(args, 'G');
+	struct client			*c = cmdq_get_client(item);
 #endif
 
 	sx = screen_size_x(&wp->base);
@@ -344,7 +345,8 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 		    top, bottom, &nrects);
 	if (args_has(args, 'K')) {
 		buf = image_capture_transmit(rects,
-		    nrects, args_get(args, 'k'), len);
+		    nrects, args_get(args, 'k'), len,
+		    c != NULL && (c->flags & CLIENT_CONTROL_IMAGESHM));
 		free(rects);
 		if (buf == NULL)
 			cmdq_error(item, "image changed");

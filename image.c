@@ -18,7 +18,9 @@
  */
 
 #include <sys/types.h>
+#include <sys/mman.h>
 
+#include <errno.h>
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
@@ -32,6 +34,7 @@ struct image {
 	u_int			 id;
 	enum image_type		 type;
 	u_int			 references;
+	int			 stored;
 	struct image_geom	 geom;
 
 	struct image		*parent;
@@ -48,6 +51,10 @@ struct image {
 	size_t			 size;
 	u_char			*pixels;
 	struct image_payload	 payload;
+	struct {
+		void		*base;
+		size_t		 length;
+	} mapping;
 
 	RB_ENTRY(image)		 entry;
 	TAILQ_ENTRY(image)	 all_entry;
@@ -83,7 +90,7 @@ void
 image_touch(struct image *im)
 {
 	for (; im != NULL; im = im->parent) {
-		if (TAILQ_FIRST(&all_images) != im) {
+		if (im->stored && TAILQ_FIRST(&all_images) != im) {
 			TAILQ_REMOVE(&all_images, im, all_entry);
 			TAILQ_INSERT_HEAD(&all_images, im, all_entry);
 		}
@@ -128,16 +135,28 @@ image_get_type(struct image *im)
 	return (im->type);
 }
 
+static void
+image_unstore(struct image *im)
+{
+	if (!im->stored)
+		return;
+	RB_REMOVE(images, &images, im);
+	TAILQ_REMOVE(&all_images, im, all_entry);
+	image_count--;
+	im->stored = 0;
+}
+
 /* Remove an image and children. */
 static void
 image_remove_all(struct image *im)
 {
-	struct image *child;
+	struct image *child, *next;
 
 	image_ref(im);
-	while ((child = TAILQ_FIRST(&im->children)) != NULL)
+	TAILQ_FOREACH_SAFE(child, &im->children, child_entry, next)
 		image_remove_all(child);
 	image_grid_remove_all(im);
+	image_unstore(im);
 	image_free(im);
 }
 
@@ -226,6 +245,7 @@ image_alloc(enum image_type type, struct image_geom *ig, size_t stride,
 	im->id = id;
 	im->type = type;
 	im->references = 1;
+	im->stored = 1;
 	im->order_id = id;
 	im->geom = *ig;
 	im->stride = stride;
@@ -254,6 +274,7 @@ image_create_with_parent(enum image_type type, struct image *parent,
 	struct image	*im;
 	size_t		 size = 0, limit;
 
+	errno = EINVAL;
 	limit = options_get_number(global_options, "image-size-limit");
 	if (ig->src_w == 0 || ig->src_h == 0)
 		return (NULL);
@@ -272,8 +293,10 @@ image_create_with_parent(enum image_type type, struct image *parent,
 
 	if (parent == NULL)
 		size = (ig->src_h - 1) * stride + ig->src_w * 4;
-	if (image_check_limits(parent, size, 1) != 0)
+	if (image_check_limits(parent, size, 1) != 0) {
+		errno = ENOSPC;
 		return (NULL);
+	}
 
 	im = image_alloc(type, ig, stride, pixels);
 	im->parent = parent;
@@ -305,13 +328,16 @@ image_free(struct image *im)
 	if (im->references == 0)
 		fatalx("invalid image reference %u", im->id);
 	if (--im->references == 0) {
-		RB_REMOVE(images, &images, im);
-		TAILQ_REMOVE(&all_images, im, all_entry);
-		image_count--;
+		image_unstore(im);
 		if (im->parent == NULL) {
-			image_size -= im->size + im->payload.size;
-			free(im->payload.data);
-			free(im->pixels);
+			if (im->mapping.length != 0) {
+				image_size -= im->mapping.length;
+				munmap(im->mapping.base, im->mapping.length);
+			} else {
+				image_size -= im->size + im->payload.size;
+				free(im->payload.data);
+				free(im->pixels);
+			}
 		} else {
 			TAILQ_REMOVE(&im->parent->children, im, child_entry);
 			image_free(im->parent);
@@ -340,6 +366,19 @@ image_set_payload(struct image *im, struct image_payload *payload)
 	im->payload = *payload;
 	image_size += payload->size;
 	return (0);
+}
+
+int
+image_set_mapping(struct image *im, void *base, size_t length,
+    struct image_payload *payload)
+{
+	int error = image_check_limits(im, length - im->size, 0);
+
+	im->mapping.base = base;
+	im->mapping.length = length;
+	im->payload = *payload;
+	image_size += length - im->size;
+	return (error);
 }
 
 /* Get the image geometry. */

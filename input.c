@@ -145,6 +145,8 @@ struct input_ctx {
 	struct event			 ground_timer;
 #ifdef ENABLE_IMAGES
 	void				*kitty_state;
+	size_t				parse_offset;
+	int				kitty_pending;
 #endif
 };
 
@@ -943,6 +945,9 @@ input_reset(struct input_ctx *ictx, int clear)
 		screen_write_stop(sctx);
 	}
 
+#ifdef ENABLE_IMAGES
+	ictx->kitty_pending = 0;
+#endif
 	input_clear(ictx);
 
 	ictx->state = &input_state_ground;
@@ -987,6 +992,19 @@ input_parse(struct input_ctx *ictx, const u_char *buf, size_t len)
 	/* Parse the input. */
 	while (off < len) {
 		ictx->ch = buf[off++];
+#ifdef ENABLE_IMAGES
+		ictx->parse_offset = off;
+		if (ictx->kitty_pending) {
+			ictx->kitty_pending = 0;
+			if (ictx->ch == '\\' && ictx->wp != NULL)
+				kitty_parse_input(ictx, ictx->wp, sctx,
+				    ictx->cell.cell.bg, &ictx->kitty_state,
+				    ictx->input_buf, ictx->input_len,
+				    ictx->wp->offset.used + off);
+			ictx->input_len = 0;
+			*ictx->input_buf = '\0';
+		}
+#endif
 
 		/* Find the transition. */
 		if (ictx->state != state ||
@@ -1227,8 +1245,13 @@ input_clear(struct input_ctx *ictx)
 	*ictx->param_buf = '\0';
 	ictx->param_len = 0;
 
-	*ictx->input_buf = '\0';
-	ictx->input_len = 0;
+#ifdef ENABLE_IMAGES
+	if (!ictx->kitty_pending)
+#endif
+	{
+		*ictx->input_buf = '\0';
+		ictx->input_len = 0;
+	}
 
 	ictx->input_end = INPUT_END_ST;
 
@@ -2861,8 +2884,13 @@ input_exit_apc(struct input_ctx *ictx)
 
 #ifdef ENABLE_IMAGES
 	if (wp != NULL && len > 1 && buf[0] == 'G') {
+		if (ictx->ch == '\033') {
+			ictx->kitty_pending = 1;
+			return;
+		}
 		kitty_parse_input(ictx, wp, sctx, ictx->cell.cell.bg,
-		    &ictx->kitty_state, buf, len);
+		    &ictx->kitty_state, buf, len,
+		    wp->offset.used + ictx->parse_offset);
 		return;
 	}
 #endif
