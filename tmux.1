@@ -2990,6 +2990,13 @@ bytes, with replies suppressed.
 After a frame edit, the root image is sent as raw RGBA with
 .Ql f=32,s=width,v=height
 instead of its received data.
+Animation frames follow the root as fully composed RGBA frame appends,
+then an animation control command restores the current frame, gaps and
+remaining loops.
+Kitty frame uploads, playback control, frame composition and frame deletion
+are stored; each full frame counts towards the image size limits.
+Playback advances from elapsed time only when captured or redrawn, with no
+timer for terminal clients.
 Each reply is limited to 8 MiB.
 If more data remains, the final line is
 .Ql more token .
@@ -2998,8 +3005,8 @@ Repeat the command with the same range and
 to continue.
 A continuation fails with
 .Ql image changed
-if its image was edited, removed, replaced or moved out of the range, or the
-token is invalid.
+if its frame was edited, deleted or renumbered, its image was removed,
+replaced or moved out of the range, or the token is invalid.
 .Fl a
 with either image flag reads the saved main screen.
 When image support is disabled,

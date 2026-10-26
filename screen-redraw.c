@@ -1848,6 +1848,9 @@ redraw_set_draw_context(struct redraw_draw_ctx *dctx,
 	struct tty	*tty = &c->tty;
 	u_int		 lines;
 
+#ifdef ENABLE_IMAGES
+	image_frames_now();
+#endif
 	memset(dctx, 0, sizeof *dctx);
 	dctx->scene = scene;
 

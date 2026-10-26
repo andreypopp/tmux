@@ -212,8 +212,8 @@ with tempfile.TemporaryDirectory(prefix='tmux-kitty-protocol-') as tmp:
             check('invalid-control-' + control,
                   graphics('a=t,i=7,' + control, pixel), invalid)
         for action in ['a', 'c']:
-            check('unsupported-action-' + action,
-                  graphics('a=%s,i=7' % action), graphics('i=7', 'ENOTSUP'))
+            check('animation-missing-image-' + action,
+                  graphics('a=%s,i=7' % action), graphics('i=7', 'ENOENT'))
         for medium in ['f', 't']:
             check('unsupported-medium-' + medium,
                   graphics('a=t,i=7,t=' + medium), graphics('i=7', 'ENOTSUP'))

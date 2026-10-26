@@ -10,47 +10,22 @@ import base64
 import mmap
 import os
 import re
-import subprocess
 import sys
-from image_test import image_test, kitty, png, Control, SharedMemory, shm_contents
+from image_test import image_test, kitty, png, Control, SharedMemory, shm_contents, token
 
 with image_test(sys.argv[1]) as test:
     objects = SharedMemory()
     control = None
-    fd = None
     try:
-        replies = test.directory.name + '/replies'
-        test.run('respawn-pane', '-k', "stty raw -echo; printf '\033]2;recorder\007'; exec cat > " + replies)
-        test.wait(lambda: test.run('display-message', '-p', '#{pane_title}') == 'recorder')
-        pane = test.run('display-message', '-p', '#{pane_id}')
-        fd = os.open(test.run('display-message', '-p', '#{pane_tty}'), os.O_WRONLY)
-        def send(data):
-            while data:
-                data = data[os.write(fd, data):]
-        test.send = send
-        def capture(*extra):
-            return subprocess.check_output(test.server + ['capture-pane', '-K', '-p', '-t', pane] + list(extra), timeout=10)
+        test.record()
+        pane = test.pane
+        capture = test.capture
+        reply = test.reply
+        recorded = test.recorded
         def pixels(identity=1):
-            selected = []
-            active = False
-            for keys, value in re.findall(rb'\033_G([^;]*);(.*?)\033\\', capture()):
-                if b'a=t,' in keys:
-                    active = b'i=%d,' % identity in keys
-                    if active:
-                        assert b'f=32,s=4,v=4,' in keys, keys
-                if active:
-                    selected.append(base64.b64decode(value))
-            return b''.join(selected)
-        def recorded(data, expected):
-            before = os.path.getsize(replies)
-            test.emit(data)
-            test.wait(lambda: os.path.getsize(replies) >= before + len(expected))
-            with open(replies, 'rb') as f:
-                f.seek(before)
-                actual = f.read()
-            assert actual == expected, (actual, expected)
-        def reply(keys, data, expected):
-            recorded(kitty(keys + ',q=0', data), expected)
+            selected = [value for keys, value in test.frames() if b'i=%d,' % identity in keys]
+            assert len(selected) == 1, selected
+            return selected[0]
         red = b'\xff\0\0\xff'
         green = b'\0\xff\0\xff'
         original = red * 16
@@ -63,10 +38,7 @@ with image_test(sys.argv[1]) as test:
             expected[(y * 4 + 1) * 4:(y * 4 + 3) * 4] = green * 2
         assert pixels() == expected
         test.wait(lambda: any((0, 255, 0) in image[2] for image in client.images()))
-        test.run('detach-client', '-t', client.name)
-        test.clients.remove(client)
-        os.close(client.fd)
-        test.wait(lambda: os.waitpid(client.pid, os.WNOHANG)[0] != 0)
+        test.detach(client)
         print('PASS root frame pixels and scheduled sixel redraw')
 
         for under, over, expected in [
@@ -105,9 +77,6 @@ with image_test(sys.argv[1]) as test:
             ('i=99,r=1,s=1,v=1', 'ENOENT'),
             ('i=1,r=1,s=5,v=1', 'EINVAL'),
             ('i=1,r=1,s=1', 'EINVAL'),
-            ('i=1,r=2,s=1,v=1', 'ENOTSUP'),
-            ('i=1,r=0,s=1,v=1', 'ENOTSUP'),
-            ('i=1,r=99,s=1,v=1', 'ENOTSUP'),
         ]:
             identity = 99 if 'i=99,' in keys else 1
             number = int(re.search(r'r=(\d+)', keys)[1])
@@ -174,15 +143,13 @@ with image_test(sys.argv[1]) as test:
         test.emit(kitty('a=d,d=A'))
         name = objects.create(red * (2048 * 1024))
         test.emit(kitty('a=T,i=3,f=32,s=2048,v=1024,c=1,r=1,C=1,t=s', name.encode()))
-        token = re.search(rb'^more (.*)$', capture(), re.M)[1].decode()
+        continuation = token(capture())
         test.emit(kitty('a=f,i=3,r=1,f=32,s=1,v=1,X=1', green))
-        result = subprocess.run(test.server + ['capture-pane', '-K', '-p', '-t', pane, '-k', token], capture_output=True, timeout=10)
+        result = capture('-k', continuation, check=False)
         assert result.returncode != 0 and b'image changed' in result.stderr, result
         print('PASS continuation rejects an edited root')
     finally:
         if control is not None:
             control.close()
-        if fd is not None:
-            os.close(fd)
         objects.close()
 PY

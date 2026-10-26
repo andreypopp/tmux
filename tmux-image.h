@@ -123,9 +123,31 @@ struct image_data *image_data_create(struct image *, struct image_payload *,
 void		 image_data_ref(struct image_data *);
 struct image_payload *image_data_payload(struct image_data *);
 void		 image_data_free(struct image_data *);
+enum image_animation_state {
+	IMAGE_STOPPED = 1,
+	IMAGE_LOADING = 2,
+	IMAGE_RUNNING = 3
+};
+struct image_frame_state {
+	u_int current, loops;
+	enum image_animation_state state;
+	int root_gap;
+};
+int		 image_frame_restore(struct image *, struct image_frame_state *);
+void		 image_frame_control(struct image *, u_int, int, u_int,
+		     enum image_animation_state, u_int);
+void		 image_frames_now(void);
+u_int		 image_frame_count(struct image *);
+u_int		 image_frame_generation(struct image *, u_int);
+int		 image_frame_gap(struct image *, u_int);
+void		 image_frame_payload(struct image *, u_int, struct image_payload *);
+int		 image_frame_now(struct image *);
+int		 image_frame_edit(struct image *, u_int *, u_int, uint32_t,
+		     const u_char *, u_int, u_int, u_int, u_int, int, int);
+void		 image_frame_delete(struct image *, u_int);
+int		 image_frame_compose(struct image *, u_int, u_int, u_int, u_int,
+		     u_int, u_int, u_int, u_int, int);
 u_int		 image_get_generation(struct image *);
-int		 image_edit(struct image *, const u_char *, u_int, u_int,
-		     u_int, u_int, int, int);
 #define IMAGE_CHUNK_MAX (512 + 4096 + 3)
 void		 image_transmit_chunk(struct image_data *, const char *, size_t *,
 		     char *, size_t *);
@@ -240,7 +262,7 @@ struct image_capture *image_capture_select(void *, struct grid *, u_int, u_int,
 		     u_int *);
 char		*image_capture_line(void *, struct grid *, struct screen *,
 		     u_int, struct image_capture *, u_int, struct grid_cell **, int);
-char		*image_capture_transmit(struct image_capture *, u_int,
+char		*image_capture_transmit(struct window_pane *, struct image_capture *, u_int,
 		     const char *, size_t *, int);
 char		*image_capture_pending(void *);
 void		*input_kitty_state(struct input_ctx *);

@@ -344,7 +344,7 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 		rects = image_capture_select(input_kitty_state(wp->ictx), gd,
 		    top, bottom, &nrects);
 	if (args_has(args, 'K')) {
-		buf = image_capture_transmit(rects,
+		buf = image_capture_transmit(wp, rects,
 		    nrects, args_get(args, 'k'), len,
 		    c != NULL && (c->flags & CLIENT_CONTROL_IMAGESHM));
 		free(rects);

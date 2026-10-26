@@ -205,6 +205,53 @@ class ImageTest:
         self.wait(lambda: self.run("display-message", "-p",
             "#{pane_title}") == "READY")
 
+    def record(self):
+        self.replies = self.directory.name + '/replies'
+        self.run('respawn-pane', '-k', "stty raw -echo; printf '\033]2;recorder\007'; exec cat > " + self.replies)
+        self.wait(lambda: self.run('display-message', '-p', '#{pane_title}') == 'recorder')
+        self.pane = self.run('display-message', '-p', '#{pane_id}')
+        self.recorder = os.open(self.run('display-message', '-p', '#{pane_tty}'), os.O_WRONLY)
+        def send(data):
+            while data:
+                data = data[os.write(self.recorder, data):]
+        self.send = send
+
+    def capture(self, *extra, check=True):
+        result = subprocess.run(self.server + ['capture-pane', '-K', '-p', '-t', self.pane] + list(extra),
+            capture_output=True, timeout=10, check=check)
+        return result.stdout if check else result
+
+    def frames(self, data=None, objects=None):
+        result = []
+        for keys, value in re.findall(rb'\033_G([^;]*);(.*?)\033\\', self.capture() if data is None else data):
+            if b'a=t,' in keys or b'a=f,' in keys:
+                result.append([keys, b''])
+            if b't=s,' in keys:
+                name = base64.b64decode(value).decode()
+                objects.names.append(name)
+                result[-1][1] = shm_contents(name, int(re.search(rb'S=(\d+)', keys)[1]))
+            else:
+                result[-1][1] += base64.b64decode(value)
+        return result
+
+    def recorded(self, data, expected):
+        before = os.path.getsize(self.replies)
+        self.emit(data)
+        self.wait(lambda: os.path.getsize(self.replies) >= before + len(expected))
+        with open(self.replies, 'rb') as f:
+            f.seek(before)
+            actual = f.read()
+        assert actual == expected, (actual, expected)
+
+    def reply(self, keys, data, expected):
+        self.recorded(kitty(keys + ',q=0', data), expected)
+
+    def detach(self, client):
+        self.run('detach-client', '-t', client.name)
+        self.clients.remove(client)
+        os.close(client.fd)
+        self.wait(lambda: os.waitpid(client.pid, os.WNOHANG)[0] != 0)
+
     def attach(self, graphical=True, utf8=True, cw=8, ch=16, term=None):
         """Attach a client with a known cell pixel size and image feature."""
         if term is None:
@@ -302,6 +349,8 @@ class ImageTest:
             if os.waitpid(client.pid, os.WNOHANG) == (0, 0):
                 os.kill(client.pid, signal.SIGTERM)
                 os.waitpid(client.pid, 0)
+        if hasattr(self, 'recorder'):
+            os.close(self.recorder)
         self.directory.cleanup()
 
 
@@ -314,6 +363,10 @@ def image_test(tmux, sx=40, sy=16):
         yield test
     finally:
         test.close()
+
+
+def token(data):
+    return re.search(rb'^more (.*)$', data, re.M)[1].decode()
 
 
 def kitty(control, data=b''):
