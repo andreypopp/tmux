@@ -726,6 +726,8 @@ window_pane_update_focus(struct window_pane *wp)
 			focused = 0;
 		else {
 			TAILQ_FOREACH(c, &clients, entry) {
+				if (c->flags & CLIENT_CONTROL_NOOUTPUT)
+					continue;
 				if (c->session != NULL &&
 				    c->session->attached != 0 &&
 				    (c->flags & CLIENT_FOCUSED) &&
