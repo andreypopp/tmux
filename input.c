@@ -1501,6 +1501,9 @@ input_csi_dispatch(struct input_ctx *ictx)
 	struct screen			*s = sctx->s;
 	const struct input_table_entry	*entry;
 	struct options			*oo;
+#ifdef ENABLE_IMAGES
+	struct client			*c;
+#endif
 	int				 i, n, m, ek, set, p;
 	u_int				 cx, bg = ictx->cell.cell.bg;
 
@@ -1618,7 +1621,12 @@ input_csi_dispatch(struct input_ctx *ictx)
 			break;
 		case 0:
 #ifdef ENABLE_IMAGES
-			input_reply(ictx, 1, "\033[?1;2;4c");
+			TAILQ_FOREACH(c, &clients, entry) {
+				if (c->session != NULL && (c->flags & CLIENT_TERMINAL) &&
+				    (c->tty.term->flags & TERM_SIXEL))
+					break;
+			}
+			input_reply(ictx, 1, c != NULL ? "\033[?1;2;4c" : "\033[?1;2c");
 #else
 			input_reply(ictx, 1, "\033[?1;2c");
 #endif
