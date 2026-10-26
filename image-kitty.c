@@ -19,6 +19,7 @@
 
 #include <limits.h>
 #include <math.h>
+#include <resolv.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -46,6 +47,7 @@ struct kitty_state {
 	u_int				 placement_id;
 	u_int				 quiet;
 	u_int				 data_size;
+	int				 z;
 	int				 no_cursor;
 	int				 more;
 
@@ -78,6 +80,302 @@ struct kitty_image_map {
 	TAILQ_ENTRY(kitty_image_map)		 entry;
 };
 
+#define IMAGE_CAPTURE_BUDGET (8 * 1024 * 1024)
+#define IMAGE_CAPTURE_MORE (sizeof "more 4294967295:18446744073709551615\n" - 1)
+
+static struct kitty_image_map *kitty_image_map_find_image(struct kitty_state *,
+    struct image *);
+
+static struct kitty_image_map *kitty_image_map_find(struct kitty_state *, u_int);
+
+static char *
+kitty_capture_keys(struct image_payload *payload)
+{
+	char	width[32] = "", height[32] = "", *keys;
+
+	if (payload->width != 0)
+		xsnprintf(width, sizeof width, "s=%u,", payload->width);
+	if (payload->height != 0)
+		xsnprintf(height, sizeof height, "v=%u,", payload->height);
+	xasprintf(&keys, "f=%u,%s%s%s", payload->format,
+	    payload->compression == 'z' ? "o=z," : "", width, height);
+	return (keys);
+}
+
+static size_t
+kitty_capture_data(char **buf, size_t *len, const char *keys,
+    const u_char *data, size_t size, size_t offset, int more)
+{
+	char	 header[512];
+	size_t	 n, headerlen, encoded, length;
+
+	if (data == NULL)
+		data = (const u_char *)"";
+	do {
+		n = size - offset > 3072 ? 3072 : size - offset;
+		headerlen = snprintf(header, sizeof header, "\033_G%sm=%d%s;",
+		    offset == 0 ? keys : "", offset + n < size || more,
+		    offset == 0 ? "" : ",q=2");
+		encoded = 4 * ((n + 2) / 3);
+		length = headerlen + encoded + 3;
+		if (*len + length + (more ? 0 : IMAGE_CAPTURE_MORE) > IMAGE_CAPTURE_BUDGET)
+			break;
+		*buf = xrealloc(*buf, *len + length + 1);
+		memcpy(*buf + *len, header, headerlen);
+		b64_ntop(data + offset, n, *buf + *len + headerlen, encoded + 1);
+		memcpy(*buf + *len + headerlen + encoded, "\033\\\n", 3);
+		*len += length;
+		(*buf)[*len] = '\0';
+		offset += n;
+	} while (offset < size);
+	return (offset);
+}
+
+char *
+image_capture_pending(void *state)
+{
+	struct kitty_state	*ks = state;
+	struct image_payload	 payload;
+	char			*keys, *format, *result = xstrdup("");
+	size_t			 len = 0, chunks, encoded, overhead;
+
+	if (ks == NULL || !ks->more)
+		return (result);
+	payload = (struct image_payload) { ks->data, ks->size,
+	    ks->format, ks->width, ks->height, ks->compression };
+	format = kitty_capture_keys(&payload);
+	xasprintf(&keys, "a=%c,i=%u,I=%u,p=%u,%s"
+	    "x=%u,y=%u,w=%u,h=%u,X=%u,Y=%u,c=%u,r=%u,C=%d,q=%u,S=%u,z=%d,",
+	    ks->action, ks->image_id, ks->image_number, ks->placement_id,
+	    format, ks->source_x, ks->source_y, ks->source_width,
+	    ks->source_height, ks->x_offset, ks->y_offset, ks->columns,
+	    ks->rows, ks->no_cursor, ks->quiet, ks->data_size, ks->z);
+	free(format);
+	chunks = ks->size == 0 ? 1 : (ks->size + 3071) / 3072;
+	encoded = 4 * ((ks->size + 2) / 3);
+	overhead = strlen(keys) + sizeof "\033_Gm=1;\033\\\n" - 1 +
+	    (chunks - 1) * (sizeof "\033_Gm=1,q=2;\033\\\n" - 1);
+	if (encoded + overhead <= IMAGE_CAPTURE_BUDGET)
+		kitty_capture_data(&result, &len, keys, ks->data, ks->size, 0, 1);
+	free(keys);
+	return (result);
+}
+
+static int
+kitty_capture_compare(const void *a, const void *b)
+{
+	const struct image_rect	*ra = a, *rb = b;
+
+	return (ra->dst_x < rb->dst_x ? -1 : ra->dst_x > rb->dst_x);
+}
+
+struct image_capture *
+image_capture_select(void *state, struct grid *gd, u_int top, u_int bottom,
+    u_int *count)
+{
+	struct kitty_state	*ks = state;
+	struct image_rect	*rects;
+	struct image_capture	*selected = NULL;
+	struct kitty_image_map	*map;
+	struct image		*parent;
+	u_int			 y, i, j, n, id, kept = 0;
+
+	*count = 0;
+	if (ks == NULL)
+		return (NULL);
+	for (y = top; y <= bottom; y++) {
+		rects = image_grid_capture_line(gd, y, &n);
+		qsort(rects, n, sizeof *rects, kitty_capture_compare);
+		for (i = 0; i < n; i++) {
+			for (j = 0; j < *count; j++) {
+				if (selected[j].rect.image == rects[i].image)
+					break;
+			}
+			if (j != *count) {
+				if (rects[i].src_y == selected[j].rect.src_y +
+				    selected[j].rect.sy && y == selected[j].rect.dst_y +
+				    selected[j].rect.sy)
+					selected[j].rect.sy++;
+				continue;
+			}
+			selected = xreallocarray(selected, *count + 1, sizeof *selected);
+			selected[(*count)++].rect = rects[i];
+		}
+		free(rects);
+	}
+	for (i = 0; i < *count; i++) {
+		parent = image_get_parent(selected[i].rect.image);
+		if (parent != NULL && image_get_type(parent) == IMAGE_TYPE_KITTY)
+			selected[kept++] = selected[i];
+	}
+	*count = kept;
+	for (i = 0; i < *count; i++) {
+		parent = image_get_parent(selected[i].rect.image);
+		map = kitty_image_map_find_image(ks, parent);
+		for (j = 0; j < i; j++) {
+			if (image_get_parent(selected[j].rect.image) == parent)
+				break;
+		}
+		if (j < i)
+			id = selected[j].id;
+		else if (map != NULL)
+			id = map->kitty_id;
+		else {
+			id = 0x80000000U | (image_get_id(parent) & 0x7fffffffU);
+			for (;;) {
+				for (j = 0; j < i && selected[j].id != id; j++)
+					;
+				if (kitty_image_map_find(ks, id) == NULL && j == i)
+					break;
+				id = 0x80000000U | ((id + 1) & 0x7fffffffU);
+			}
+		}
+		selected[i].id = id;
+	}
+	return (selected);
+}
+
+char *
+image_capture_line(void *state, struct grid *gd, struct screen *s, u_int y,
+    struct image_capture *rects, u_int count, struct grid_cell **gc, int flags)
+{
+	struct kitty_state		*ks = state;
+	struct kitty_image_map		*map;
+	struct kitty_placement_map	*kpl;
+	struct image_rect		*r;
+	struct image_geom		*ig;
+	const struct grid_line		*gl = grid_peek_line(gd, y);
+	struct evbuffer			*out;
+	char				*text, *result;
+	u_int				 i, x = 0, end, px, py, pw, ph, columns, rows;
+
+	for (i = 0; i < count; i++) {
+		if (rects[i].rect.dst_y == y)
+			break;
+	}
+	if (i == count)
+		return (grid_string_cells(gd, 0, y, gd->sx, gc, flags, s));
+	out = evbuffer_new();
+	for (; i < count && rects[i].rect.dst_y == y; i++) {
+		r = &rects[i].rect;
+		map = kitty_image_map_find_image(ks, image_get_parent(r->image));
+		text = grid_string_cells(gd, x, y, r->dst_x - x, gc,
+		    flags & ~GRID_STRING_TRIM_SPACES, s);
+		evbuffer_add(out, text, strlen(text));
+		free(text);
+		end = flags & GRID_STRING_EMPTY_CELLS ? gl->cellsize : gl->cellused;
+		if (end > r->dst_x)
+			end = r->dst_x;
+		if (end < x)
+			end = x;
+		for (; end < r->dst_x; end++)
+			evbuffer_add(out, " ", 1);
+		x = r->dst_x;
+		image_get_pixel_area(r->image, r->src_x, r->src_y, r->sx,
+		    r->sy, &px, &py, &pw, &ph);
+		ig = image_get_geometry(r->image);
+		columns = r->sx;
+		rows = r->sy;
+		if (ig->scaled_width == ig->src_w &&
+		    (double)(r->src_x + r->sx) * ig->canvas_width / ig->sx >
+		    ig->canvas_xoff + ig->scaled_width)
+			columns = 0;
+		if (ig->scaled_height == ig->src_h &&
+		    (double)(r->src_y + r->sy) * ig->canvas_height / ig->sy >
+		    ig->canvas_yoff + ig->scaled_height)
+			rows = 0;
+		evbuffer_add_printf(out, "\033_Ga=p,i=%u,",
+		    rects[i].id);
+		if (ig->z != 0)
+			evbuffer_add_printf(out, "z=%d,", ig->z);
+		if (r->src_x == 0 && ig->canvas_xoff != 0)
+			evbuffer_add_printf(out, "X=%u,", ig->canvas_xoff);
+		if (r->src_y == 0 && ig->canvas_yoff != 0)
+			evbuffer_add_printf(out, "Y=%u,", ig->canvas_yoff);
+		if (map != NULL) {
+			TAILQ_FOREACH(kpl, &map->placements, entry) {
+				if (kpl->image_id == image_get_id(r->image)) {
+					if (kpl->kitty_id != 0)
+						evbuffer_add_printf(out, "p=%u,", kpl->kitty_id);
+					break;
+				}
+			}
+		}
+		evbuffer_add_printf(out,
+		    "q=2,C=1,c=%u,r=%u,x=%u,y=%u,w=%u,h=%u\033\\",
+		    columns, rows, px + ig->src_x, py + ig->src_y, pw, ph);
+	}
+	text = grid_string_cells(gd, x, y, gd->sx - x, gc, flags, s);
+	evbuffer_add(out, text, strlen(text));
+	free(text);
+	result = xstrndup(EVBUFFER_DATA(out), EVBUFFER_LENGTH(out));
+	evbuffer_free(out);
+	return (result);
+}
+
+char *
+image_capture_transmit(struct image_capture *rects, u_int count,
+    const char *token, size_t *len)
+{
+	struct image_capture	**images = NULL;
+	struct image		*parent;
+	struct image_payload	*payload;
+	u_int			 i, j, nimages = 0, start = 0, id;
+	size_t			 offset = 0, next;
+	char			*keys, *format, *result = xstrdup(""), tail;
+	char			 canonical[64];
+
+	for (i = 0; i < count; i++) {
+		parent = image_get_parent(rects[i].rect.image);
+		for (j = 0; j < nimages; j++) {
+			if (image_get_parent(images[j]->rect.image) == parent)
+				break;
+		}
+		if (j != nimages)
+			continue;
+		images = xreallocarray(images, nimages + 1, sizeof *images);
+		images[nimages++] = &rects[i];
+	}
+	if (token != NULL) {
+		if (sscanf(token, "%u:%zu%c", &id, &offset, &tail) != 2)
+			goto changed;
+		xsnprintf(canonical, sizeof canonical, "%u:%zu", id, offset);
+		if (strcmp(canonical, token) != 0 || offset % 3072 != 0)
+			goto changed;
+		for (start = 0; start < nimages; start++) {
+			if (image_get_id(image_get_parent(images[start]->rect.image)) == id)
+				break;
+		}
+		if (start == nimages || offset >= image_get_payload(image_get_parent(images[start]->rect.image))->size)
+			goto changed;
+	}
+	for (i = start; i < nimages; i++) {
+		parent = image_get_parent(images[i]->rect.image);
+		payload = image_get_payload(parent);
+		format = kitty_capture_keys(payload);
+		xasprintf(&keys, "a=t,i=%u,%sq=2,",
+		    images[i]->id, format);
+		free(format);
+		next = kitty_capture_data(&result, len, keys, payload->data,
+		    payload->size, offset, 0);
+		free(keys);
+		if (next < payload->size) {
+			result = xrealloc(result, *len + IMAGE_CAPTURE_MORE + 1);
+			*len += snprintf(result + *len, IMAGE_CAPTURE_MORE + 1,
+			    "more %u:%zu\n", image_get_id(parent), next);
+			break;
+		}
+		offset = 0;
+	}
+	free(images);
+	return (result);
+
+changed:
+	free(images);
+	free(result);
+	return (NULL);
+}
+
 /* Select Kitty output. */
 int
 kitty_select(__unused struct tty *tty)
@@ -94,7 +392,6 @@ kitty_parse_control_data(struct kitty_state *ks, const u_char *data,
 	const char	*errstr;
 	u_int		 number;
 	char		 key;
-	int		 z;
 
 	*m = NULL;
 
@@ -138,11 +435,9 @@ kitty_parse_control_data(struct kitty_state *ks, const u_char *data,
 			}
 			break;
 		case 'z':
-			z = strtonum(value, INT_MIN, INT_MAX, &errstr);
+			ks->z = strtonum(value, INT_MIN, INT_MAX, &errstr);
 			if (errstr != NULL)
 				*m = (*m == NULL ? "EINVAL" : *m);
-			else if (z != 0)
-				*m = (*m == NULL ? "ENOTSUP" : *m);
 			break;
 		case 'U':
 		case 'P':
@@ -300,6 +595,18 @@ kitty_image_map_find(struct kitty_state *ks, u_int id)
 
 	TAILQ_FOREACH(map, &ks->images, entry) {
 		if (map->kitty_id == id)
+			return (map);
+	}
+	return (NULL);
+}
+
+static struct kitty_image_map *
+kitty_image_map_find_image(struct kitty_state *ks, struct image *parent)
+{
+	struct kitty_image_map	*map;
+
+	TAILQ_FOREACH(map, &ks->images, entry) {
+		if (map->image_id == image_get_id(parent))
 			return (map);
 	}
 	return (NULL);
@@ -514,6 +821,7 @@ kitty_place_image(struct image *src, struct kitty_state *ks, u_int xpixel,
 	uint64_t		 cw, ch;
 	double			 size;
 
+	ig.z = ks->z;
 	ig.src_x = ks->source_x;
 	ig.src_y = ks->source_y;
 
@@ -660,6 +968,7 @@ kitty_parse_input(struct input_ctx *ictx, struct window_pane *wp,
 		ks->quiet = 0;
 		ks->data_size = 0;
 		ks->no_cursor = 0;
+		ks->z = 0;
 	}
 	ks->more = 0;
 

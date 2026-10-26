@@ -949,6 +949,14 @@ input_reset(struct input_ctx *ictx, int clear)
 	ictx->flags = 0;
 }
 
+#ifdef ENABLE_IMAGES
+void *
+input_kitty_state(struct input_ctx *ictx)
+{
+	return (ictx->kitty_state);
+}
+#endif
+
 /* Return pending data. */
 struct evbuffer *
 input_pending(struct input_ctx *ictx)

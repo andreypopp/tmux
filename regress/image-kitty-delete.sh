@@ -63,8 +63,9 @@ for selector in 'cCpPqQrRxXyYzZ':
     cases.append(('unsupported selector ' + selector,
         kitty('a=d,d=%s,i=7,p=1,x=1,y=2,z=0' % selector), list(pictures)))
 for z in (-2147483648, -1, 1, 2147483647):
-    cases.append(('unsupported layer ' + str(z),
-        kitty('a=d,d=I,i=7,p=1,z=%d' % z), list(pictures)))
+    cases.append(('placement deletion ignores layer ' + str(z),
+        kitty('a=d,d=I,i=7,p=1,z=%d' % z),
+        ['second', 'other', 'anonymous', 'sixel']))
 with image_test(sys.argv[1]) as test:
     test.run('set-option', '-g', 'scroll-on-clear', 'off')
     client = test.attach()

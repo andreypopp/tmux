@@ -51,6 +51,7 @@ enum image_type {
 
 /* Source image and placement geometry. */
 struct image_geom {
+	int	 z;
 	/* Position and size within the source RGBA pixels. */
 	u_int	 src_x;
 	u_int	 src_y;
@@ -140,6 +141,8 @@ u_char		*image_raw_decode(const u_char *, size_t, size_t, u_int, u_int,
 		     u_int, int);
 
 /* image-grid.c */
+struct image_rect *image_grid_capture_line(struct grid *, u_int,
+		     u_int *);
 void		 image_grid_add(struct grid *, struct image *, u_int, u_int,
 		     u_int, u_int, u_int, u_int);
 void		 image_grid_overwrite(struct grid *, u_int, u_int, u_int,
@@ -212,6 +215,18 @@ void		 kitty_parse_input(struct input_ctx *, struct window_pane *,
 		     size_t);
 void		 kitty_free_state(void *);
 void		 kitty_remove_image(struct image *);
+struct image_capture {
+	struct image_rect rect;
+	u_int		 id;
+};
+struct image_capture *image_capture_select(void *, struct grid *, u_int, u_int,
+		     u_int *);
+char		*image_capture_line(void *, struct grid *, struct screen *,
+		     u_int, struct image_capture *, u_int, struct grid_cell **, int);
+char		*image_capture_transmit(struct image_capture *, u_int,
+		     const char *, size_t *);
+char		*image_capture_pending(void *);
+void		*input_kitty_state(struct input_ctx *);
 
 #endif /* ENABLE_IMAGES */
 

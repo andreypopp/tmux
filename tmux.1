@@ -2898,8 +2898,9 @@ The pane must not already be floating or hidden, and the window must not
 be zoomed.
 .Tg capturep
 .It Xo Ic capture\-pane
-.Op Fl aeFHILpPRqCJMN
+.Op Fl aeFGHIKLpPRqCJMN
 .Op Fl b Ar buffer\-name
+.Op Fl k Ar token
 .Op Fl E Ar end\-line
 .Op Fl S Ar start\-line
 .Op Fl t Ar target\-pane
@@ -2962,6 +2963,38 @@ only hyperlinks in the specified lines are captured.
 Multiple hyperlinks on the same line are separated by spaces.
 .Fl R
 dumps the internal grid data for diagnostics.
+.Pp
+.Fl G
+includes Kitty image placements at their first cell in the captured range.
+Only images with a client image ID are included; image and placement IDs are
+preserved.
+Placements above the range are cropped to its first row.
+Text and attributes are retained, including spaces before a placement.
+If the range includes the live screen, an incomplete Kitty transmission is
+included after the text, unless its encoded size exceeds 8 MiB.
+.Pp
+.Fl K
+captures only the received image data for placements in the range, once per
+image, in order of first appearance.
+The data is written as Kitty transmit commands, in lines of up to 4096 base64
+bytes, with replies suppressed.
+Each reply is limited to 8 MiB.
+If more data remains, the final line is
+.Ql more token .
+Repeat the command with the same range and
+.Fl k Ar token
+to continue.
+A continuation fails with
+.Ql image changed
+if its image was removed, replaced or moved out of the range, or the token is
+invalid.
+.Fl a
+with either image flag reads the saved main screen.
+When image support is disabled,
+.Fl G
+captures text without placements and
+.Fl K
+produces no output.
 .Pp
 .Fl S
 and

@@ -1381,6 +1381,26 @@ image_write(struct screen_write_ctx *ctx, struct image *im, u_int bg,
 	}
 }
 
+struct image_rect *
+image_grid_capture_line(struct grid *gd, u_int y, u_int *count)
+{
+	struct image_line	*line = gd->linedata[y].images;
+	struct image_span	*span;
+	struct image_rect	*rects = NULL;
+
+	*count = 0;
+	if (line == NULL)
+		return (NULL);
+	TAILQ_FOREACH(span, &line->spans, line_entry) {
+		rects = xreallocarray(rects, *count + 1, sizeof *rects);
+		rects[(*count)++] = (struct image_rect) {
+		    .image = span->placement->image,
+		    .sx = span->sx, .sy = 1, .src_x = span->source_x,
+		    .src_y = span->source_y, .dst_x = span->x, .dst_y = y };
+	}
+	return (rects);
+}
+
 /* Find the cell within an image at a grid position. */
 int
 image_grid_get_at(struct grid *gd, u_int x, u_int y, struct image **im,

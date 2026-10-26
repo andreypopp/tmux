@@ -203,34 +203,34 @@ with tempfile.TemporaryDirectory(prefix='tmux-kitty-protocol-') as tmp:
         unsupported = graphics('i=7', 'ENOTSUP')
         check('default-layer', graphics(transmit + ',z=0', pixel), ok)
         for z in [-2147483648, -1073741824, -1, 1, 2147483647]:
-            check('unsupported-layer-' + str(z),
-                  graphics(transmit + ',z=' + str(z), pixel), unsupported)
+            check('layer-' + str(z),
+                  graphics(transmit + ',z=' + str(z), pixel), ok)
         for action in ['t', 'T', 'p', 'q', 'd']:
-            check('unsupported-action-layer-' + action,
-                  graphics('a=%s,i=7,p=9,f=32,s=1,v=1,z=-1' % action,
-                           pixel), graphics('i=7,p=9', 'ENOTSUP'))
+            check('action-layer-' + action,
+                  graphics(transmit + ',q=2', pixel) +
+                  graphics('a=%s,i=7,p=9,f=32,s=1,v=1,C=1,z=-1' % action,
+                           pixel), '' if action == 'd' else graphics('i=7,p=9', 'OK'))
         for quiet in [1, 2]:
-            check('unsupported-layer-quiet-' + str(quiet),
-                  graphics(transmit + ',q=%d,z=1' % quiet, pixel),
-                  unsupported if quiet == 1 else '')
+            check('layer-quiet-' + str(quiet),
+                  graphics(transmit + ',q=%d,z=1' % quiet, pixel), '')
         check('zero-layer-chunks', graphics(transmit + ',z=0,m=1', '/wAA') +
               graphics('m=0,z=0', '/w=='), ok)
-        check('unsupported-layer-aborts-chunks',
+        check('layer-on-final-chunk',
               graphics(transmit + ',m=1', '/wAA') +
               graphics('m=0,z=1', '/w==') + graphics(transmit, pixel),
-              unsupported + ok)
-        check('unsupported-layer-does-not-start-chunks',
+              ok + ok)
+        check('layer-on-first-chunk',
               graphics(transmit + ',m=1,z=1', '/wAA') +
               graphics('m=0', '/w==') + graphics(transmit, pixel),
-              unsupported + ok)
-        # Reply controls must be read even after an unsupported field.
+              ok + ok)
+        # Reply controls must be read after the layer.
         check('quiet-after-layer',
               graphics(transmit + ',z=1,q=2', pixel), '')
         check('id-after-layer',
-              graphics('a=q,z=1,i=7,f=32,s=1,v=1', pixel), unsupported)
+              graphics('a=q,z=1,i=7,f=32,s=1,v=1', pixel), ok)
         check('placement-after-layer',
-              graphics('z=-1,a=q,i=7,p=9,q=1', pixel),
-              graphics('i=7,p=9', 'ENOTSUP'))
+              graphics('z=-1,a=q,i=7,p=9,q=0,f=32,s=1,v=1', pixel),
+              graphics('i=7,p=9', 'OK'))
         check('quiet-after-invalid-control',
               graphics('a=t,i=7,s=bad,q=2', pixel), '')
         check('id-after-invalid-control',
@@ -244,9 +244,9 @@ with tempfile.TemporaryDirectory(prefix='tmux-kitty-protocol-') as tmp:
         check('first-error-invalid',
               graphics('s=bad,z=1,a=q,i=7,p=9', pixel),
               graphics('i=7,p=9', 'EINVAL'))
-        check('first-error-unsupported',
+        check('invalid-control-after-layer',
               graphics('z=1,s=bad,a=q,i=7,p=9', pixel),
-              graphics('i=7,p=9', 'ENOTSUP'))
+              graphics('i=7,p=9', 'EINVAL'))
         for control in ['U=1', 'P=99', 'Q=9', 'H=1', 'H=-1', 'V=1', 'V=-1']:
             check('unsupported-placement-' + control,
                   graphics('a=T,i=7,f=32,s=1,v=1,' + control, pixel),
@@ -347,20 +347,20 @@ with tempfile.TemporaryDirectory(prefix='tmux-kitty-protocol-') as tmp:
         check('unsupported-delete-does-not-inherit-id', stored +
               graphics(transmit + ',m=1', '/wAA') + graphics('a=d,d=P') +
               graphics('a=p,i=7,C=1'), ok)
-        check('unsupported-layer-delete-aborts-upload', stored +
+        check('layer-delete-aborts-upload', stored +
               graphics(transmit + ',q=2,m=1', '/wAA') +
               graphics('a=d,d=I,i=7,z=1') + graphics('a=p,i=7,C=1'),
-              unsupported + ok)
-        check('unsupported-layer-delete-does-not-inherit-id', stored +
+              missing)
+        check('layer-delete-does-not-inherit-id', stored +
               graphics(transmit + ',m=1', '/wAA') +
               graphics('a=d,d=I,z=-1') + graphics('a=p,i=7,C=1'), ok)
         for action in ['t', 'T', 'q']:
-            check('unsupported-layer-keeps-source-' + action, stored +
-                  graphics('a=%s,i=7,f=32,s=1,v=1,z=1' % action, pixel) +
-                  graphics('a=p,i=7,C=1'), unsupported + ok)
-        check('unsupported-layer-query-does-not-store',
+            check('layer-source-' + action, stored +
+                  graphics('a=%s,i=7,f=32,s=1,v=1,C=1,z=1' % action, pixel) +
+                  graphics('a=p,i=7,C=1'), ok + ok)
+        check('layer-query-does-not-store',
               graphics('a=q,i=7,f=32,s=1,v=1,z=1', pixel) +
-              graphics('a=p,i=7,C=1'), unsupported + missing)
+              graphics('a=p,i=7,C=1'), ok + missing)
 
         # Abort immediately when chunked data exceeds the limit, then recover.
         block = base64.b64encode(b'\0' * 4096).decode()

@@ -116,15 +116,15 @@ with image_test(sys.argv[1]) as test:
         test.emit(kitty('a=d,d=I,i=501'))
         terminal = check(test, client, terminal, rectangle(colour))
 
-    # Rejected layers cannot replace stored pixels or remove placements.
-    test.emit(b'\033[2J\033[H' + upload(600, red) + put(600))
-    terminal = check(test, client, Terminal(), rectangle(red))
-    for action in ('t', 'T', 'p', 'q', 'd'):
-        test.emit(kitty('a=%s,i=600,p=9,f=32,s=1,v=1,C=1,d=I,z=1' %
+    for action, expected in [('t', {}), ('T', rectangle(green)),
+            ('p', rectangle(red)), ('q', rectangle(red)), ('d', {})]:
+        test.emit(b'\033[2J\033[H' + upload(600, red) + put(600, ',p=9'))
+        terminal = check(test, client, Terminal(), rectangle(red))
+        test.emit(kitty('a=%s,i=600,p=9,f=32,s=1,v=1,c=2,r=1,C=1,d=I,z=1' %
             action, bytes((*green, 255))))
-        terminal = check(test, client, terminal, rectangle(red))
-    test.emit(kitty('a=p,i=600,p=9,C=1,c=2,r=1,z=0'))
-    terminal = check(test, client, terminal, rectangle(red))
+        check(test, client, terminal, expected)
+    test.emit(b'\033[2J\033[H' + upload(600, red) + put(600))
+    check(test, client, Terminal(), rectangle(red))
 
     # Images at the default layer cover text and explicit backgrounds.
     test.emit(b'\033[2J\033[H\033[44mX \033[0m\033[H' + put(600))

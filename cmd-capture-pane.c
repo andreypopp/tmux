@@ -43,9 +43,9 @@ const struct cmd_entry cmd_capture_pane_entry = {
 	.description = "Capture pane content.",
 	.alias = "capturep",
 
-	.args = { "ab:CeE:FHIJLMNpPqRS:Tt:", 0, 0, NULL },
-	.usage = "[-aCeFHIJLMNpPqRT] " CMD_BUFFER_USAGE " [-E end-line] "
-		 "[-S start-line] " CMD_TARGET_PANE_USAGE,
+	.args = { "ab:CeE:FGHIJKk:LMNpPqRS:Tt:", 0, 0, NULL },
+	.usage = "[-aCeFGHIJKLMNpPqRT] " CMD_BUFFER_USAGE " [-E end-line] "
+		 "[-S start-line] [-k token] " CMD_TARGET_PANE_USAGE,
 
 	.target = { 't', CMD_FIND_PANE, 0 },
 
@@ -267,6 +267,11 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 	char				*cause, *buf = NULL, *line, b[64], *cp;
 	const char			*Sflag, *Eflag;
 	size_t				 linelen;
+#ifdef ENABLE_IMAGES
+	struct image_capture		*rects = NULL;
+	u_int				 nrects = 0;
+	int				 images = args_has(args, 'G');
+#endif
 
 	sx = screen_size_x(&wp->base);
 	if (args_has(args, 'a')) {
@@ -333,6 +338,22 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 		top = tmp;
 	}
 
+#ifdef ENABLE_IMAGES
+	if (images || args_has(args, 'K'))
+		rects = image_capture_select(input_kitty_state(wp->ictx), gd,
+		    top, bottom, &nrects);
+	if (args_has(args, 'K')) {
+		buf = image_capture_transmit(rects,
+		    nrects, args_get(args, 'k'), len);
+		free(rects);
+		if (buf == NULL)
+			cmdq_error(item, "image changed");
+		return (buf);
+	}
+#else
+	if (args_has(args, 'K'))
+		return (xstrdup(""));
+#endif
 	join_lines = args_has(args, 'J');
 	if (args_has(args, 'e'))
 		flags |= GRID_STRING_WITH_SEQUENCES;
@@ -350,6 +371,13 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 		links = xreallocarray(NULL, gd->sx, sizeof *links);
 
 	for (i = top; i <= bottom; i++) {
+#ifdef ENABLE_IMAGES
+		if (images) {
+			line = image_capture_line(input_kitty_state(wp->ictx),
+			    gd, s, i, rects, nrects, &gc, flags);
+			linelen = strlen(line);
+		} else
+#endif
 		if (hyperlinks) {
 			line = cmd_capture_pane_hyperlinks(gd, s, i, links,
 			    &nlinks, &linelen);
@@ -407,6 +435,15 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 
 		free(line);
 	}
+#ifdef ENABLE_IMAGES
+	free(rects);
+	if (images &&
+	    gd == wp->base.grid && bottom >= gd->hsize) {
+		line = image_capture_pending(input_kitty_state(wp->ictx));
+		buf = cmd_capture_pane_append(buf, len, line, strlen(line));
+		free(line);
+	}
+#endif
 	free(links);
 	if (buf == NULL)
 		buf = xstrdup("");
@@ -441,6 +478,10 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
 		buf = cmd_capture_pane_history(args, item, wp, &len);
 	if (buf == NULL)
 		return (CMD_RETURN_ERROR);
+	if (len == 0 && args_has(args, 'K')) {
+		free(buf);
+		return (CMD_RETURN_NORMAL);
+	}
 
 	if (args_has(args, 'p')) {
 		if (len > 0 && buf[len - 1] == '\n')
