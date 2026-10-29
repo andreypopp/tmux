@@ -1235,6 +1235,7 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
 		}
 		memcpy(buf + off, code, codelen);
 		off += codelen;
+		(*lastgc)->link = 0;
 	}
 
 	if (flags & GRID_STRING_TRIM_SPACES) {
