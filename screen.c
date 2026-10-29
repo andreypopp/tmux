@@ -757,6 +757,28 @@ screen_alternate_off(struct screen *s, struct grid_cell *gc, int cursor)
 	return 1;
 }
 
+struct grid *
+screen_replay_grid(struct screen *s)
+{
+	struct screen	 copy = *s;
+	struct grid	*gd = s->grid, *saved = s->saved_grid;
+	u_int		 total = gd->hsize + gd->sy;
+
+	copy.tabs = NULL;
+	copy.write_list = NULL;
+	copy.grid = grid_create(gd->sx, total, gd->hlimit);
+	copy.grid->sy = gd->sy;
+	copy.grid->hsize = gd->hsize;
+	copy.grid->hscrolled = gd->hscrolled;
+	copy.grid->flags = gd->flags;
+	grid_duplicate_lines(copy.grid, 0, gd, 0, total);
+	copy.saved_grid = grid_create(saved->sx, saved->sy, 0);
+	grid_duplicate_lines(copy.saved_grid, 0, saved, 0, saved->sy);
+	screen_alternate_off(&copy, NULL, 1);
+	free(copy.tabs);
+	return (copy.grid);
+}
+
 /* Get mode as a string. */
 const char *
 screen_mode_to_string(int mode)

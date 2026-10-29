@@ -850,6 +850,8 @@ struct colour_palette {
 #define GRID_STRING_TRIM_SPACES 0x4
 #define GRID_STRING_USED_ONLY 0x8
 #define GRID_STRING_EMPTY_CELLS 0x10
+#define GRID_STRING_REPLAY 0x20
+#define GRID_STRING_REPLAY_WRAPPED 0x40
 
 /*
  * Cell border characters. Border cells are named for the directions they
@@ -3556,6 +3558,7 @@ void	 grid_check_is_clear(struct grid *);
 void	 grid_empty_line(struct grid *, u_int, u_int);
 void	 grid_set_tab(struct grid_cell *, u_int);
 int	 grid_cells_equal(const struct grid_cell *, const struct grid_cell *);
+int	 grid_replay_wrap(struct grid *, u_int);
 int	 grid_cells_look_equal(const struct grid_cell *,
 	     const struct grid_cell *);
 struct grid *grid_create(u_int, u_int, u_int);
@@ -3758,6 +3761,7 @@ int	 screen_select_cell(struct screen *, struct grid_cell *,
 u_int	 screen_line_width(struct screen *, struct grid *, u_int);
 int	 screen_alternate_on(struct screen *, struct grid_cell *, int);
 int	 screen_alternate_off(struct screen *, struct grid_cell *, int);
+struct grid *screen_replay_grid(struct screen *);
 const char *screen_mode_to_string(int);
 const char *screen_print(struct screen *, int);
 

@@ -2907,7 +2907,7 @@ The pane must not already be floating or hidden, and the window must not
 be zoomed.
 .Tg capturep
 .It Xo Ic capture\-pane
-.Op Fl aeFGHIKLpPRqCJMN
+.Op Fl aeFGHIKLpPRqrCJMN
 .Op Fl b Ar buffer\-name
 .Op Fl k Ar token
 .Op Fl E Ar end\-line
@@ -2934,6 +2934,59 @@ If
 .Fl e
 is given, the output includes escape sequences for text and background
 attributes.
+.Fl r
+produces a terminal replay stream for the pane's current width and implies
+.Fl e .
+On the alternate screen, main history and the saved main screen are copied
+and reflowed as when the alternate screen exits.
+Negative row numbers refer to this reflowed history.
+With
+.Fl a ,
+the default range is the visible main screen after reflow.
+Without
+.Fl a ,
+a range wholly within the visible screen uses the live alternate screen.
+A range that spans main history and the alternate screen is not guaranteed
+to replay as one terminal; capture these separately.
+Image rows follow the same reflow rules as the pane on alternate-screen exit.
+The stream assumes default attributes and colours, no open hyperlink and
+G0 character set at its start.
+Each row ends in this state, so no row has a leading reset.
+.Ql ESC[m
+is emitted only when attributes or colours need a reset.
+Cleared cells are written with erase sequences rather than spaces.
+Wrapped rows use natural wrapping when possible; other rows are separated
+by a carriage return and line feed.
+Each captured row includes its separator if another row follows in the grid,
+even outside the captured range.
+There is no separator after the grid's last row, including with
+.Fl p .
+With
+.Fl G ,
+a placement is captured whole only when its first remaining grid row is in
+the range; it is cropped to the grid, not the range.
+Placements use explicit columns and do not change row separators.
+After a hard separator or at the grid's first row, placements precede the text.
+After a natural wrap, the first character precedes the placements, then the
+rest of the text follows from the next column.
+If that character fills the row, it is written again after the placements
+to restore pending wrap.
+.Fl J ,
+.Fl N
+and
+.Fl T
+have no effect with
+.Fl r ;
+.Fl C ,
+.Fl F ,
+.Fl H ,
+.Fl I ,
+.Fl K ,
+.Fl L ,
+.Fl P
+and
+.Fl R
+are not permitted with it.
 .Fl C
 also escapes non-printable characters as octal \exxx.
 .Fl T

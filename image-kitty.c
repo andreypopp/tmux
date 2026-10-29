@@ -365,10 +365,12 @@ image_capture_line(void *state, struct grid *gd, struct screen *s, u_int y,
 	struct kitty_placement_map	*kpl;
 	struct image_rect		*r;
 	struct image_geom		*ig;
+	struct grid_cell		 first;
 	const struct grid_line		*gl = grid_peek_line(gd, y);
 	struct evbuffer			*out;
 	char				*text, *result;
-	u_int				 i, x = 0, end, px, py, pw, ph, columns, rows;
+	u_int				 i, x = 0, lead = 0, end, px, py;
+	u_int				 pw, ph, columns, rows;
 	u_int				 sx = screen_line_width(s, gd, y);
 
 	for (i = 0; i < count; i++) {
@@ -378,20 +380,34 @@ image_capture_line(void *state, struct grid *gd, struct screen *s, u_int y,
 	if (i == count)
 		return (grid_string_cells(gd, 0, y, sx, gc, flags, s));
 	out = evbuffer_new();
-	for (; i < count && rects[i].rect.dst_y == y; i++) {
-		r = &rects[i].rect;
-		map = kitty_image_map_find_image(ks, image_get_parent(r->image));
-		text = grid_string_cells(gd, x, y, r->dst_x - x, gc,
-		    flags & ~GRID_STRING_TRIM_SPACES, s);
+	if ((flags & GRID_STRING_REPLAY) && y != 0 &&
+	    grid_replay_wrap(gd, y - 1)) {
+		grid_get_cell(gd, 0, y, &first);
+		lead = first.data.width;
+		text = grid_string_cells(gd, 0, y, lead, gc, flags, s);
 		evbuffer_add(out, text, strlen(text));
 		free(text);
-		end = flags & GRID_STRING_EMPTY_CELLS ? gl->cellsize : gl->cellused;
-		if (end > r->dst_x)
-			end = r->dst_x;
-		if (end < x)
-			end = x;
-		for (; end < r->dst_x; end++)
-			evbuffer_add(out, " ", 1);
+	}
+	for (; i < count && rects[i].rect.dst_y == y; i++) {
+		r = &rects[i].rect;
+		map = kitty_image_map_find_image(ks,
+		    image_get_parent(r->image));
+		if (flags & GRID_STRING_REPLAY)
+			evbuffer_add_printf(out, "\033[%uG", r->dst_x + 1);
+		else {
+			text = grid_string_cells(gd, x, y, r->dst_x - x, gc,
+			    flags & ~GRID_STRING_TRIM_SPACES, s);
+			evbuffer_add(out, text, strlen(text));
+			free(text);
+			end = flags & GRID_STRING_EMPTY_CELLS ?
+			    gl->cellsize : gl->cellused;
+			if (end > r->dst_x)
+				end = r->dst_x;
+			if (end < x)
+				end = x;
+			for (; end < r->dst_x; end++)
+				evbuffer_add(out, " ", 1);
+		}
 		x = r->dst_x;
 		image_get_pixel_area(r->image, r->src_x, r->src_y, r->sx,
 		    r->sy, &px, &py, &pw, &ph);
@@ -418,7 +434,8 @@ image_capture_line(void *state, struct grid *gd, struct screen *s, u_int y,
 			TAILQ_FOREACH(kpl, &map->placements, entry) {
 				if (kpl->image_id == image_get_id(r->image)) {
 					if (kpl->kitty_id != 0)
-						evbuffer_add_printf(out, "p=%u,", kpl->kitty_id);
+						evbuffer_add_printf(out,
+						    "p=%u,", kpl->kitty_id);
 					break;
 				}
 			}
@@ -426,6 +443,15 @@ image_capture_line(void *state, struct grid *gd, struct screen *s, u_int y,
 		evbuffer_add_printf(out,
 		    "q=2,C=1,c=%u,r=%u,x=%u,y=%u,w=%u,h=%u\033\\",
 		    columns, rows, px + ig->src_x, py + ig->src_y, pw, ph);
+	}
+	if (flags & GRID_STRING_REPLAY) {
+		if (lead >= sx)
+			lead = 0;
+		if (lead == 0)
+			evbuffer_add(out, "\r", 1);
+		else
+			evbuffer_add_printf(out, "\033[%uG", lead + 1);
+		x = lead;
 	}
 	text = grid_string_cells(gd, x, y, sx - x, gc, flags, s);
 	evbuffer_add(out, text, strlen(text));

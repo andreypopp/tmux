@@ -43,8 +43,8 @@ const struct cmd_entry cmd_capture_pane_entry = {
 	.description = "Capture pane content.",
 	.alias = "capturep",
 
-	.args = { "ab:CeE:FGHIJKk:LMNpPqRS:Tt:", 0, 0, NULL },
-	.usage = "[-aCeFGHIJKLMNpPqRT] " CMD_BUFFER_USAGE " [-E end-line] "
+	.args = { "ab:CeE:FGHIJKk:LMNpPqrRS:Tt:", 0, 0, NULL },
+	.usage = "[-aCeFGHIJKLMNpPqrRT] " CMD_BUFFER_USAGE " [-E end-line] "
 		 "[-S start-line] [-k token] " CMD_TARGET_PANE_USAGE,
 
 	.target = { 't', CMD_FIND_PANE, 0 },
@@ -255,13 +255,15 @@ static char *
 cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
     struct window_pane *wp, size_t *len)
 {
-	struct grid			*gd;
+	struct grid			*gd, *reflowed = NULL;
 	const struct grid_line		*gl;
 	struct screen			*s;
 	struct grid_cell		*gc = NULL;
 	struct window_mode_entry	*wme;
 	int				 n, join_lines, number_lines, flags = 0;
 	int				 show_flags, show_time, hyperlinks;
+	int				 replay = args_has(args, 'r');
+	int				 start = 0, end = 0;
 	u_int				*links = NULL, nlinks = 0;
 	u_int				 i, sx, top, bottom, tmp;
 	char				*cause, *buf = NULL, *line, b[64], *cp;
@@ -299,38 +301,48 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 	}
 
 	Sflag = args_get(args, 'S');
-	if (Sflag != NULL && strcmp(Sflag, "-") == 0)
-		top = 0;
-	else {
-		n = args_strtonum_and_expand(args, 'S', INT_MIN, SHRT_MAX,
-			item, &cause);
+	if (Sflag != NULL && strcmp(Sflag, "-") != 0) {
+		start = args_strtonum_and_expand(args, 'S', INT_MIN, SHRT_MAX,
+		    item, &cause);
 		if (cause != NULL) {
-			top = gd->hsize;
 			free(cause);
-		} else if (n < 0 && (u_int)-n > gd->hsize)
-			top = 0;
-		else
-			top = gd->hsize + n;
-		if (top > gd->hsize + gd->sy - 1)
-			top = gd->hsize + gd->sy - 1;
+			Sflag = NULL;
+		}
 	}
-
 	Eflag = args_get(args, 'E');
-	if (Eflag != NULL && strcmp(Eflag, "-") == 0)
-		bottom = gd->hsize + gd->sy - 1;
-	else {
-		n = args_strtonum_and_expand(args, 'E', INT_MIN, SHRT_MAX,
-			item, &cause);
+	if (Eflag != NULL && strcmp(Eflag, "-") != 0) {
+		end = args_strtonum_and_expand(args, 'E', INT_MIN, SHRT_MAX,
+		    item, &cause);
 		if (cause != NULL) {
-			bottom = gd->hsize + gd->sy - 1;
 			free(cause);
-		} else if (n < 0 && (u_int)-n > gd->hsize)
-			bottom = 0;
-		else
-			bottom = gd->hsize + n;
-		if (bottom > gd->hsize + gd->sy - 1)
-			bottom = gd->hsize + gd->sy - 1;
+			Eflag = NULL;
+		}
 	}
+	if (replay && s->saved_grid != NULL &&
+	    (args_has(args, 'a') ||
+	    (Sflag != NULL && (strcmp(Sflag, "-") == 0 || start < 0)) ||
+	    (Eflag != NULL && end < 0))) {
+		reflowed = screen_replay_grid(s);
+		gd = reflowed;
+	}
+	if (Sflag == NULL)
+		top = gd->hsize;
+	else if (strcmp(Sflag, "-") == 0 ||
+	    (start < 0 && (u_int)-start > gd->hsize))
+		top = 0;
+	else
+		top = gd->hsize + start;
+	if (top > gd->hsize + gd->sy - 1)
+		top = gd->hsize + gd->sy - 1;
+
+	if (Eflag == NULL || strcmp(Eflag, "-") == 0)
+		bottom = gd->hsize + gd->sy - 1;
+	else if (end < 0 && (u_int)-end > gd->hsize)
+		bottom = 0;
+	else
+		bottom = gd->hsize + end;
+	if (bottom > gd->hsize + gd->sy - 1)
+		bottom = gd->hsize + gd->sy - 1;
 
 	if (bottom < top) {
 		tmp = bottom;
@@ -341,7 +353,8 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 #ifdef ENABLE_IMAGES
 	if (images || args_has(args, 'K'))
 		rects = image_capture_select(input_kitty_state(wp->ictx), gd,
-		    top, bottom, &nrects);
+		    replay ? 0 : top, replay ? gd->hsize + gd->sy - 1 : bottom,
+		    &nrects);
 	if (args_has(args, 'K')) {
 		buf = image_capture_transmit(wp, rects,
 		    nrects, args_get(args, 'k'), len,
@@ -364,6 +377,8 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 		flags |= GRID_STRING_EMPTY_CELLS;
 	if (!join_lines && !args_has(args, 'N'))
 		flags |= GRID_STRING_TRIM_SPACES;
+	if (replay)
+		flags = GRID_STRING_REPLAY;
 	number_lines = args_has(args, 'L');
 	show_flags = args_has(args, 'F');
 	show_time = args_has(args, 'I');
@@ -372,7 +387,13 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 		links = xreallocarray(NULL, gd->sx, sizeof *links);
 
 	for (i = top; i <= bottom; i++) {
+		gl = grid_peek_line(gd, i);
 		sx = screen_line_width(s, gd, i);
+		if (replay) {
+			flags &= ~GRID_STRING_REPLAY_WRAPPED;
+			if (grid_replay_wrap(gd, i))
+				flags |= GRID_STRING_REPLAY_WRAPPED;
+		}
 #ifdef ENABLE_IMAGES
 		if (images) {
 			line = image_capture_line(input_kitty_state(wp->ictx),
@@ -391,7 +412,6 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 			free(line);
 			continue;
 		}
-		gl = grid_peek_line(gd, i);
 
 		if (number_lines) {
 			if (i >= gd->hsize)
@@ -432,7 +452,12 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 		}
 		buf = cmd_capture_pane_append(buf, len, line, linelen);
 
-		if (!join_lines || !(gl->flags & GRID_LINE_WRAPPED))
+		if (replay) {
+			if (i != gd->hsize + gd->sy - 1 &&
+			    !(flags & GRID_STRING_REPLAY_WRAPPED))
+				buf = cmd_capture_pane_append(buf, len,
+				    "\r\n", 2);
+		} else if (!join_lines || !(gl->flags & GRID_LINE_WRAPPED))
 			buf[(*len)++] = '\n';
 
 		free(line);
@@ -440,13 +465,16 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 #ifdef ENABLE_IMAGES
 	free(rects);
 	if (images &&
-	    gd == wp->base.grid && bottom >= gd->hsize) {
+	    gd == wp->base.grid &&
+	    (replay ? bottom == gd->hsize + gd->sy - 1 : bottom >= gd->hsize)) {
 		line = image_capture_pending(input_kitty_state(wp->ictx));
 		buf = cmd_capture_pane_append(buf, len, line, strlen(line));
 		free(line);
 	}
 #endif
 	free(links);
+	if (reflowed != NULL)
+		grid_destroy(reflowed);
 	if (buf == NULL)
 		buf = xstrdup("");
 	return (buf);
@@ -471,6 +499,13 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
 		return (CMD_RETURN_NORMAL);
 	}
 
+	if (args_has(args, 'r') && (args_has(args, 'L') ||
+	    args_has(args, 'I') || args_has(args, 'F') || args_has(args, 'H') ||
+	    args_has(args, 'C') || args_has(args, 'P') || args_has(args, 'R') ||
+	    args_has(args, 'K'))) {
+		cmdq_error(item, "incompatible capture flags with -r");
+		return (CMD_RETURN_ERROR);
+	}
 	len = 0;
 	if (args_has(args, 'R'))
 		buf = cmd_capture_pane_grid(wp, &len);
@@ -486,7 +521,7 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
 	}
 
 	if (args_has(args, 'p')) {
-		if (len > 0 && buf[len - 1] == '\n')
+		if (!args_has(args, 'r') && len > 0 && buf[len - 1] == '\n')
 			len--;
 		if (c->flags & CLIENT_CONTROL)
 			control_write(c, "%.*s", (int)len, buf);
@@ -497,7 +532,8 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
 				return (CMD_RETURN_ERROR);
 			}
 			file_print_buffer(c, buf, len);
-			file_print(c, "\n");
+			if (!args_has(args, 'r'))
+				file_print(c, "\n");
 		}
 		free(buf);
 	} else {

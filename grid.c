@@ -1152,6 +1152,121 @@ grid_string_cells_code(const struct grid_cell *lastgc,
 	}
 }
 
+int
+grid_replay_wrap(struct grid *gd, u_int y)
+{
+	const struct grid_line	*gl = grid_peek_line(gd, y);
+	struct grid_cell		 first, last;
+	u_int			 used = gl->cellused;
+
+	if (used > gd->sx)
+		used = gd->sx;
+	if (y == gd->hsize + gd->sy - 1 || used == 0 ||
+	    !(gl->flags & GRID_LINE_WRAPPED))
+		return (0);
+	grid_get_cell(gd, 0, y + 1, &first);
+	grid_get_cell(gd, used - 1, y, &last);
+	return (!(first.flags & GRID_FLAG_CLEARED) &&
+	    !(last.flags & GRID_FLAG_CLEARED) &&
+	    (used == gd->sx || (!(first.flags & GRID_FLAG_TAB) &&
+	    used + first.data.width > gd->sx)));
+}
+
+static void
+grid_string_replay_pen(struct evbuffer *out, struct grid_cell *last,
+    const struct grid_cell *gc, struct screen *s, int *has_link)
+{
+	struct grid_cell	 from = *last;
+	char			 code[8192];
+	size_t			 off = 0;
+
+	if (last->attr == gc->attr && last->fg == gc->fg &&
+	    last->bg == gc->bg && last->us == gc->us && last->link == gc->link)
+		return;
+	if ((gc->attr & ~GRID_ATTR_CHARSET) == 0 && gc->fg == 8 &&
+	    gc->bg == 8 && gc->us == 8) {
+		if ((last->attr & ~GRID_ATTR_CHARSET) != 0 ||
+		    last->fg != 8 || last->bg != 8 || last->us != 8) {
+			memcpy(code, "\033[m", 3);
+			off = 3;
+		}
+		from.attr &= GRID_ATTR_CHARSET;
+		from.fg = from.bg = from.us = 8;
+	}
+	grid_string_cells_code(&from, gc, code + off, sizeof code - off,
+	    GRID_STRING_WITH_SEQUENCES, s, has_link);
+	evbuffer_add(out, code, off + strlen(code + off));
+	*last = *gc;
+}
+
+static char *
+grid_string_replay(struct grid *gd, u_int px, u_int py, u_int nx,
+    struct grid_cell *lastgc, int flags, struct screen *s)
+{
+	struct evbuffer		*out;
+	struct grid_cell		 gc, first, bg;
+	struct grid_cell		 last = grid_default_cell;
+	const struct grid_line	*gl = grid_peek_line(gd, py);
+	char			*buf;
+	u_int			 x, n, end = px + nx;
+	int			 has_link = 0;
+
+	if (end > gd->sx)
+		end = gd->sx;
+	out = evbuffer_new();
+	if (px != 0 && lastgc != NULL) {
+		last = *lastgc;
+		has_link = (last.link != 0);
+	}
+	for (x = px; x < end;) {
+		if ((flags & GRID_STRING_REPLAY_WRAPPED) && x >= gl->cellused)
+			break;
+		grid_get_cell(gd, x, py, &gc);
+		if (x >= gl->cellsize || (gc.flags & GRID_FLAG_CLEARED)) {
+			first = gc;
+			bg = grid_default_cell;
+			bg.bg = gc.bg;
+			for (n = 1; x + n < end; n++) {
+				grid_get_cell(gd, x + n, py, &gc);
+				if (x + n >= gl->cellsize ||
+				    !(gc.flags & GRID_FLAG_CLEARED) ||
+				    !grid_cells_look_equal(&gc, &first))
+					break;
+			}
+			if (x >= gl->cellsize ||
+			    (x + n >= gl->cellsize && bg.bg == 8)) {
+				grid_string_replay_pen(out, &last,
+				    &grid_default_cell, s, &has_link);
+				evbuffer_add(out, "\033[K", 3);
+				break;
+			}
+			grid_string_replay_pen(out, &last, &bg, s, &has_link);
+			evbuffer_add_printf(out, "\033[%uX\033[%uC", n, n);
+			x += n;
+			continue;
+		}
+		if (gc.flags & GRID_FLAG_PADDING) {
+			x++;
+			continue;
+		}
+		grid_string_replay_pen(out, &last, &gc, s, &has_link);
+		if (gc.flags & GRID_FLAG_TAB) {
+			for (n = 0; n < gc.data.width; n++)
+				evbuffer_add(out, " ", 1);
+		} else
+			evbuffer_add(out, gc.data.data, gc.data.size);
+		x += gc.data.width;
+	}
+	if (end == gd->sx)
+		grid_string_replay_pen(out, &last, &grid_default_cell, s,
+		    &has_link);
+	if (lastgc != NULL)
+		*lastgc = last;
+	buf = xstrndup(EVBUFFER_DATA(out), EVBUFFER_LENGTH(out));
+	evbuffer_free(out);
+	return (buf);
+}
+
 /* Convert cells into a string. */
 char *
 grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
@@ -1170,6 +1285,9 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
 		memcpy(&lastgc1, &grid_default_cell, sizeof lastgc1);
 		*lastgc = &lastgc1;
 	}
+	if (flags & GRID_STRING_REPLAY)
+		return (grid_string_replay(gd, px, py, nx,
+		    lastgc != NULL ? *lastgc : NULL, flags, s));
 
 	len = 128;
 	buf = xmalloc(len);
