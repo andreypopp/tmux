@@ -1095,12 +1095,11 @@ grid_string_cells_code(const struct grid_cell *lastgc,
 		else
 			strlcat(buf, "\033[", len);
 		for (i = 0; i < n; i++) {
-			if (s[i] < 10)
-				xsnprintf(tmp, sizeof tmp, "%d", s[i]);
-			else {
+			if (s[i] >= 42 && s[i] <= 45) {
 				xsnprintf(tmp, sizeof tmp, "%d:%d", s[i] / 10,
 				    s[i] % 10);
-			}
+			} else
+				xsnprintf(tmp, sizeof tmp, "%d", s[i]);
 			strlcat(buf, tmp, len);
 			if (i + 1 < n)
 				strlcat(buf, ";", len);
