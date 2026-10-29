@@ -3755,6 +3755,7 @@ void	 screen_hide_selection(struct screen *);
 int	 screen_check_selection(struct screen *, u_int, u_int);
 int	 screen_select_cell(struct screen *, struct grid_cell *,
 	     const struct grid_cell *);
+u_int	 screen_line_width(struct screen *, struct grid *, u_int);
 int	 screen_alternate_on(struct screen *, struct grid_cell *, int);
 int	 screen_alternate_off(struct screen *, struct grid_cell *, int);
 const char *screen_mode_to_string(int);

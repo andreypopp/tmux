@@ -369,13 +369,14 @@ image_capture_line(void *state, struct grid *gd, struct screen *s, u_int y,
 	struct evbuffer			*out;
 	char				*text, *result;
 	u_int				 i, x = 0, end, px, py, pw, ph, columns, rows;
+	u_int				 sx = screen_line_width(s, gd, y);
 
 	for (i = 0; i < count; i++) {
 		if (rects[i].rect.dst_y == y)
 			break;
 	}
 	if (i == count)
-		return (grid_string_cells(gd, 0, y, gd->sx, gc, flags, s));
+		return (grid_string_cells(gd, 0, y, sx, gc, flags, s));
 	out = evbuffer_new();
 	for (; i < count && rects[i].rect.dst_y == y; i++) {
 		r = &rects[i].rect;
@@ -426,7 +427,7 @@ image_capture_line(void *state, struct grid *gd, struct screen *s, u_int y,
 		    "q=2,C=1,c=%u,r=%u,x=%u,y=%u,w=%u,h=%u\033\\",
 		    columns, rows, px + ig->src_x, py + ig->src_y, pw, ph);
 	}
-	text = grid_string_cells(gd, x, y, gd->sx - x, gc, flags, s);
+	text = grid_string_cells(gd, x, y, sx - x, gc, flags, s);
 	evbuffer_add(out, text, strlen(text));
 	free(text);
 	result = xstrndup(EVBUFFER_DATA(out), EVBUFFER_LENGTH(out));

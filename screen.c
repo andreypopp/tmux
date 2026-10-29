@@ -660,6 +660,14 @@ screen_reflow(struct screen *s, u_int new_x, u_int *cx, u_int *cy, int cursor)
 	}
 }
 
+u_int
+screen_line_width(struct screen *s, struct grid *gd, u_int y)
+{
+	if (gd == s->grid && s->saved_grid != NULL && y < gd->hsize)
+		return (s->saved_grid->sx);
+	return (gd->sx);
+}
+
 /*
  * Enter alternative screen mode. A copy of the visible screen is saved and the
  * history is not updated.

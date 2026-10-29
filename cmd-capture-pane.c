@@ -274,7 +274,6 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 	struct client			*c = cmdq_get_client(item);
 #endif
 
-	sx = screen_size_x(&wp->base);
 	if (args_has(args, 'a')) {
 		gd = wp->base.saved_grid;
 		if (gd == NULL) {
@@ -373,6 +372,7 @@ cmd_capture_pane_history(struct args *args, struct cmdq_item *item,
 		links = xreallocarray(NULL, gd->sx, sizeof *links);
 
 	for (i = top; i <= bottom; i++) {
+		sx = screen_line_width(s, gd, i);
 #ifdef ENABLE_IMAGES
 		if (images) {
 			line = image_capture_line(input_kitty_state(wp->ictx),
