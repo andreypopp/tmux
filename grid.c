@@ -248,6 +248,8 @@ grid_clear_cell(struct grid *gd, u_int px, u_int py, u_int bg, int moved)
 			gce->data.bg = bg;
 		}
 	}
+	if (gce->flags & GRID_FLAG_EXTENDED)
+		gl->extddata[gce->offset].flags |= GRID_FLAG_CLEARED;
 }
 
 /* Check grid y position. */
